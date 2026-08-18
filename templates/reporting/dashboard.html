@@ -1,0 +1,95 @@
+{% extends "reporting/base.html" %}
+
+{% block title %}Vue d'ensemble — ULTEx Meta Reports{% endblock %}
+{% block date_control %}
+<form method="get" class="date-form range-form">
+    <label><span>Du</span><input class="date-control" type="date" name="start" value="{{ selected_start|date:'Y-m-d' }}" aria-label="Date de début"></label>
+    <label><span>Au</span><input class="date-control" type="date" name="end" value="{{ selected_end|date:'Y-m-d' }}" aria-label="Date de fin"></label>
+    <button class="button primary" type="submit">Appliquer</button>
+</form>
+{% endblock %}
+
+{% block content %}
+{% if not account %}
+{% if connection_ready %}
+<section class="onboarding-card">
+    <div class="onboarding-step">02</div>
+    <div>
+        <p class="eyebrow">Connexion Meta opérationnelle</p>
+        <h2>Importez votre première journée</h2>
+        <p>La connexion est prête. Importez l’historique pour récupérer le compte, les campagnes, les ensembles et les publicités.</p>
+        <button type="button" class="button primary" data-sync-now data-start-date="{{ backfill_start|date:'Y-m-d' }}" data-end-date="{{ selected_end|date:'Y-m-d' }}" data-show-latest="true" data-api="{% url 'api_syncs' %}">Importer les {{ backfill_days }} derniers jours</button>
+    </div>
+</section>
+{% else %}
+<section class="onboarding-card">
+    <div class="onboarding-step">01</div>
+    <div><p class="eyebrow">Configuration initiale</p><h2>Connectez votre compte publicitaire Meta</h2><p>Ajoutez l’identifiant du compte et le jeton système en lecture seule. Aucune campagne ne pourra être modifiée depuis cet outil.</p><a class="button primary" href="{% url 'settings' %}">Configurer Meta</a></div>
+</section>
+{% endif %}
+{% else %}
+<section class="sync-banner {% if data_state != 'complete' %}is-warning{% endif %}" data-sync-banner>
+    <div><span class="status-dot"></span><strong>{% if data_state == 'complete' %}Données complètes{% else %}Données à vérifier{% endif %}</strong> — {% if last_sync %}{{ last_sync.message }} · {{ last_sync.created_at|date:"H:i" }}{% else %}aucune synchronisation enregistrée{% endif %}</div>
+    <div class="form-actions">
+        <button type="button" class="button ghost" data-sync-now data-start-date="{{ selected_start|date:'Y-m-d' }}" data-end-date="{{ selected_end|date:'Y-m-d' }}" data-api="{% url 'api_syncs' %}">Synchroniser la période</button>
+        <button type="button" class="button ghost" data-sync-now data-start-date="{{ backfill_start|date:'Y-m-d' }}" data-end-date="{{ selected_end|date:'Y-m-d' }}" data-show-latest="true" data-api="{% url 'api_syncs' %}">Importer {{ backfill_days }} jours</button>
+    </div>
+</section>
+
+{% if current %}
+<section class="kpi-grid" aria-label="Indicateurs principaux">
+    {% for kpi in kpis %}
+    <article class="kpi-card">
+        <div class="kpi-label">{{ kpi.label }} <span title="Comparaison avec les sept jours précédents">ⓘ</span></div>
+        <strong>{{ kpi.value }}{% if kpi.suffix %} <small>{{ kpi.suffix }}</small>{% endif %}</strong>
+        <p class="delta {{ kpi.tone }}">{% if kpi.delta != None %}{{ kpi.delta }} % <span>vs période précédente</span>{% else %}<span>Comparaison indisponible</span>{% endif %}</p>
+    </article>
+    {% endfor %}
+</section>
+
+<section class="dashboard-grid">
+    <article class="panel performance-panel">
+        <div class="panel-heading">
+            <div><p class="eyebrow">Période sélectionnée</p><h2>Dépenses et résultats</h2></div>
+            <div class="legend"><span class="legend-spend">Dépenses</span><span class="legend-result">Résultats</span></div>
+        </div>
+        <div class="real-chart"><canvas id="trend-chart" aria-label="Tendance dépenses et résultats" role="img"></canvas></div>
+        {{ trend|json_script:"trend-data" }}
+    </article>
+
+    <article class="panel alert-panel" id="alertes">
+        <div class="panel-heading"><div><p class="eyebrow">À examiner</p><h2>Alertes actives</h2></div><span class="count-badge">{{ alerts|length }}</span></div>
+        {% for alert in alerts|slice:":5" %}
+        <div class="alert-item {{ alert.severity }}"><span class="alert-icon">{% if alert.severity == 'critical' or alert.severity == 'high' %}!{% elif alert.severity == 'medium' %}↘{% else %}i{% endif %}</span><div><strong>{{ alert.title }}</strong><p>{{ alert.name|default:"Compte publicitaire" }}</p><small>{{ alert.date|date:"d/m/Y" }} · {{ alert.rule_id }}</small></div></div>
+        {% empty %}<div class="empty-compact"><span>✓</span><p>Aucune alerte ouverte pour cette période.</p></div>{% endfor %}
+    </article>
+</section>
+
+<section class="panel campaigns-panel">
+    <div class="panel-heading">
+        <div><p class="eyebrow">{% if selected_start == selected_end %}{{ selected_end|date:"d F Y" }}{% else %}Du {{ selected_start|date:"d/m/Y" }} au {{ selected_end|date:"d/m/Y" }}{% endif %}</p><h2>Performance des campagnes</h2></div>
+        <a class="button ghost" href="{% url 'performance' %}?start={{ selected_start|date:'Y-m-d' }}&end={{ selected_end|date:'Y-m-d' }}">Voir le détail</a>
+    </div>
+    <div class="table-scroll">
+        <table>
+            <thead><tr><th>Campagne</th><th>Mesure</th><th>Dépenses</th><th>Résultats</th><th>Coût / résultat</th><th>Part des résultats</th></tr></thead>
+            <tbody>
+            {% for campaign in campaigns %}
+                <tr>
+                    <td><strong>{{ campaign.name }}</strong><small>ID {{ campaign.id }}</small></td>
+                    <td><span class="pill {% if campaign.verified %}active{% else %}unverified{% endif %}">{% if campaign.verified %}Vérifiée{% else %}Meta résultat{% endif %}</span></td>
+                    <td>{{ campaign.spend }} {{ campaign.currency }}</td>
+                    <td><strong>{{ campaign.results }}</strong></td>
+                    <td>{{ campaign.cpr }} {{ campaign.currency }}</td>
+                    <td>{% if campaign.share_available %}<div class="progress" aria-label="{{ campaign.share }} %"><span style="width: {{ campaign.share }}%"></span></div>{% else %}<span class="muted">Indisponible</span>{% endif %}</td>
+                </tr>
+            {% empty %}<tr><td colspan="6" class="table-empty">Aucune campagne disponible pour cette période.</td></tr>{% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
+{% else %}
+<section class="empty-state"><div class="empty-icon">↻</div><h2>Aucune donnée pour cette période</h2><p>Lancez une synchronisation ou importez l’historique. Les valeurs manquantes ne sont jamais remplacées par zéro.</p><div class="form-actions"><button type="button" class="button primary" data-sync-now data-start-date="{{ selected_start|date:'Y-m-d' }}" data-end-date="{{ selected_end|date:'Y-m-d' }}" data-api="{% url 'api_syncs' %}">Synchroniser la période</button><button type="button" class="button ghost" data-sync-now data-start-date="{{ backfill_start|date:'Y-m-d' }}" data-end-date="{{ selected_end|date:'Y-m-d' }}" data-show-latest="true" data-api="{% url 'api_syncs' %}">Importer {{ backfill_days }} jours</button></div></section>
+{% endif %}
+{% endif %}
+{% endblock %}

@@ -1,0 +1,20 @@
+.env
+.env.*
+!.env.example
+.git
+.gitignore
+.venv
+__pycache__
+*.py[cod]
+*.sqlite3
+db.sqlite3
+media
+backups
+staticfiles
+.pytest_cache
+.mypy_cache
+.ruff_cache
+playwright-report
+test-results
+*.log
+Project specifications.docx

@@ -1,0 +1,56 @@
+{% load static %}
+<!doctype html>
+<html lang="fr">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}ULTEx Meta Reports{% endblock %}</title>
+    <meta name="description" content="Pilotage local et rapports Meta Ads pour ULTEx">
+    <link rel="stylesheet" href="{% static 'reporting/app.css' %}">
+    {% block extra_head %}{% endblock %}
+</head>
+<body>
+    <div class="app-shell">
+        <aside class="sidebar" aria-label="Navigation principale">
+            <a class="brand" href="{% url 'dashboard' %}">
+                <span class="brand-mark">U</span>
+                <span><strong>ULTEx</strong><small>Meta Reports</small></span>
+            </a>
+            <nav class="nav-list">
+                <a class="{% if active_page == 'dashboard' %}active{% endif %}" href="{% url 'dashboard' %}"><span>◫</span> Vue d'ensemble</a>
+                <a class="{% if active_page == 'performance' %}active{% endif %}" href="{% url 'performance' %}"><span>↗</span> Performance</a>
+                <a class="{% if active_page == 'reports' %}active{% endif %}" href="{% url 'reports' %}"><span>▤</span> Rapports</a>
+                <a href="{% url 'dashboard' %}#alertes"><span>⚑</span> Alertes</a>
+                <a class="{% if active_page == 'settings' %}active{% endif %}" href="{% url 'settings' %}"><span>⚙</span> Paramètres</a>
+            </nav>
+            <div class="sidebar-foot">
+                <span class="status-dot"></span>
+                <span><strong>{% if last_sync and last_sync.status == 'success' %}Meta synchronisé{% else %}État Meta{% endif %}</strong><small>{% if last_sync %}{{ last_sync.created_at|date:"d/m/Y H:i" }}{% else %}Non synchronisé{% endif %}</small></span>
+            </div>
+        </aside>
+        <main class="main-content">
+            <header class="topbar">
+                <div>
+                    <p class="eyebrow">Pilotage publicitaire</p>
+                    <h1>{% block heading %}Vue d'ensemble{% endblock %}</h1>
+                </div>
+                <div class="topbar-actions">
+                    {% block date_control %}{% endblock %}
+                    <form method="post" action="{% url 'logout' %}">
+                        {% csrf_token %}
+                        <button class="avatar" type="submit" aria-label="Se déconnecter">UM</button>
+                    </form>
+                </div>
+            </header>
+            {% if messages %}
+                <div class="messages" aria-live="polite">{% for message in messages %}<div>{{ message }}</div>{% endfor %}</div>
+            {% endif %}
+            {% block content %}{% endblock %}
+        </main>
+    </div>
+    <script src="{% static 'vendor/htmx.min.js' %}" defer></script>
+    <script src="{% static 'vendor/chart.umd.min.js' %}" defer></script>
+    <script src="{% static 'reporting/app.js' %}" defer></script>
+    {% block extra_scripts %}{% endblock %}
+</body>
+</html>

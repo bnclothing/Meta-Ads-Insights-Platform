@@ -1,0 +1,27 @@
+{% load static %}
+<!doctype html>
+<html lang="fr">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Connexion — ULTEx Meta Reports</title>
+    <link rel="stylesheet" href="{% static 'reporting/app.css' %}">
+</head>
+<body class="login-body">
+    <main class="login-card">
+        <div class="brand login-brand"><span class="brand-mark">U</span><span><strong>ULTEx</strong><small>Meta Reports</small></span></div>
+        <div><p class="eyebrow">Espace privé</p><h1>Connectez-vous</h1><p class="login-copy">Accédez au suivi quotidien de vos campagnes Meta.</p></div>
+        {% if form.errors %}<div class="form-error">Identifiant ou mot de passe incorrect.</div>{% endif %}
+        <form method="post" class="login-form">
+            {% csrf_token %}
+            <label for="id_username">Identifiant</label>
+            <input id="id_username" name="username" autocomplete="username" required autofocus>
+            <label for="id_password">Mot de passe</label>
+            <input id="id_password" name="password" type="password" autocomplete="current-password" required>
+            <button class="button primary" type="submit">Se connecter</button>
+        </form>
+        <p class="security-note">Application locale ULTEx · Accès protégé</p>
+    </main>
+</body>
+</html>
+
