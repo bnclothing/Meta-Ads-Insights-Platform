@@ -35,6 +35,16 @@
                     <h1>{% block heading %}Vue d'ensemble{% endblock %}</h1>
                 </div>
                 <div class="topbar-actions">
+                    {% if meta_connections %}
+                    <form method="get" class="account-switcher">
+                        <label for="account-switcher">Compte Meta</label>
+                        <select id="account-switcher" name="connection" onchange="this.form.submit()" aria-label="Compte publicitaire Meta affiché">
+                            {% for item in meta_connections %}
+                            <option value="{{ item.pk }}" {% if selected_connection and selected_connection.pk == item.pk %}selected{% endif %}>{{ item.name }} · {{ item.ad_account_external_id }}</option>
+                            {% endfor %}
+                        </select>
+                    </form>
+                    {% endif %}
                     {% block date_control %}{% endblock %}
                     <form method="post" action="{% url 'logout' %}">
                         {% csrf_token %}

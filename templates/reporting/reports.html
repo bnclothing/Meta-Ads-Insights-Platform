@@ -4,7 +4,7 @@
 {% block content %}
 <section class="report-builder">
     <div><p class="eyebrow">Export immuable</p><h2>Générer un rapport</h2><p>Le PDF et l’Excel utiliseront exactement le même instantané de données.</p></div>
-    <form method="post" class="inline-form">{% csrf_token %}<label>Du<input type="date" name="start" value="{{ default_end|date:'Y-m-d' }}" required></label><label>Au<input type="date" name="end" value="{{ default_end|date:'Y-m-d' }}" required></label><button class="button primary" type="submit">Générer les exports</button></form>
+    <form method="post" class="inline-form">{% csrf_token %}{% if selected_connection %}<input type="hidden" name="connection_id" value="{{ selected_connection.pk }}">{% endif %}<label>Du<input type="date" name="start" value="{{ default_end|date:'Y-m-d' }}" required></label><label>Au<input type="date" name="end" value="{{ default_end|date:'Y-m-d' }}" required></label><button class="button primary" type="submit">Générer les exports</button></form>
 </section>
 
 <section class="panel report-list">
@@ -19,4 +19,3 @@
     {% empty %}<div class="empty-state small"><h3>Aucun rapport généré</h3><p>Choisissez une période ci-dessus pour créer le premier instantané.</p></div>{% endfor %}
 </section>
 {% endblock %}
-

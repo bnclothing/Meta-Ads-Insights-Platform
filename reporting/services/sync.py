@@ -32,12 +32,85 @@ from .metrics import ZERO, decimal_value, int_value, safe_divide
 
 
 PREFERRED_ACTION_TYPES = [
-    "onsite_conversion.lead_grouped",
-    "lead",
     "offsite_conversion.fb_pixel_lead",
+    "onsite_conversion.lead_grouped",
     "onsite_conversion.messaging_conversation_started_7d",
     "onsite_conversion.messaging_first_reply",
+    "lead",
 ]
+
+
+def _action_stats_by_type(value, *, default_action_type=""):
+    if not isinstance(value, list):
+        return {}
+    stats = {}
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        action_type = item.get("action_type") or (default_action_type if len(value) == 1 else "")
+        metric_value = decimal_value(item.get("value"), None)
+        if action_type and metric_value is not None:
+            stats[action_type] = metric_value
+    return stats
+
+
+def _select_single_action(stats, costs, *, predicate):
+    candidates = [(action_type, value) for action_type, value in stats.items() if predicate(action_type)]
+    if len(candidates) != 1:
+        return None
+    action_type, value = candidates[0]
+    return value, costs.get(action_type), action_type
+
+
+def _single_meta_metric(value):
+    """Extract one unambiguous numeric value from a Meta metric object."""
+    if value in (None, "", []):
+        return None
+    if not isinstance(value, (list, dict)):
+        return decimal_value(value, None)
+
+    found = []
+
+    def collect(item):
+        if isinstance(item, list):
+            for child in item:
+                collect(child)
+        elif isinstance(item, dict):
+            if "value" in item and not isinstance(item["value"], (list, dict)):
+                parsed = decimal_value(item["value"], None)
+                if parsed is not None:
+                    found.append(parsed)
+            elif "values" in item:
+                collect(item["values"])
+
+    collect(value)
+    unique = list(dict.fromkeys(found))
+    return unique[0] if len(unique) == 1 else None
+
+
+def _meta_metric_indicator(value):
+    items = value if isinstance(value, list) else [value]
+    indicators = {
+        str(item.get("indicator") or item.get("action_type"))
+        for item in items
+        if isinstance(item, dict) and (item.get("indicator") or item.get("action_type"))
+    }
+    return next(iter(indicators)) if len(indicators) == 1 else "primary_result"
+
+
+def _meta_result_scopes(insight_pages):
+    account_available = False
+    campaign_ids = set()
+    for level, pages in insight_pages.items():
+        for page in pages:
+            for row in page.payload.get("data", []):
+                if _single_meta_metric(row.get("cost_per_result")) is None:
+                    continue
+                if level == InsightLevel.ACCOUNT:
+                    account_available = True
+                elif row.get("campaign_id"):
+                    campaign_ids.add(str(row["campaign_id"]))
+    return account_available, campaign_ids
 
 
 def _parse_dt(value):
@@ -70,28 +143,56 @@ def _store_page(sync_run, page):
     )
 
 
-def _select_result(row, connection, mapping_cache, campaign_objective=""):
+def _select_result(row, connection, mapping_cache, campaign_objective="", *, prefer_meta_result=False):
     campaign_id = row.get("campaign_id", "")
     candidates = [
         ("campaign", campaign_id),
         ("objective", campaign_objective),
         ("global", "*"),
     ]
-    actions = {item.get("action_type"): decimal_value(item.get("value"), ZERO) for item in row.get("actions", [])}
-    costs = {item.get("action_type"): decimal_value(item.get("value"), None) for item in row.get("cost_per_action_type", [])}
+    actions = _action_stats_by_type(row.get("actions", []))
+    costs = _action_stats_by_type(row.get("cost_per_action_type", []))
 
     for scope in candidates:
         mapping = mapping_cache.get(scope)
         if mapping and mapping.is_active:
-            value = actions.get(mapping.action_type)
-            if value is not None:
-                return value, costs.get(mapping.action_type), mapping.action_type, mapping.label, mapping.is_verified
+            value = actions.get(mapping.action_type, ZERO)
+            cost = costs.get(mapping.action_type)
+            return value, cost or safe_divide(decimal_value(row.get("spend"), ZERO), value), mapping.action_type, mapping.label, mapping.is_verified
+
+    if prefer_meta_result:
+        cost = _single_meta_metric(row.get("cost_per_result"))
+        indicator = _meta_metric_indicator(row.get("cost_per_result"))
+        action_type = f"meta_objective:{indicator}"[:180]
+        if cost is None:
+            return ZERO, None, action_type, "Meta résultat", False
+        value = safe_divide(decimal_value(row.get("spend"), ZERO), cost)
+        return value, cost, action_type, "Meta résultat", False
 
     for action_type in PREFERRED_ACTION_TYPES:
         if action_type in actions:
             value = actions[action_type]
             cost = costs.get(action_type) or safe_divide(decimal_value(row.get("spend"), ZERO), value)
             return value, cost, action_type, "Meta résultat", False
+
+    # Meta occasionally exposes a new lead action name before it is added to
+    # the documented aliases. Use it only when exactly one lead-like action is
+    # present, so overlapping action types are never added or guessed between.
+    lead_action = _select_single_action(actions, costs, predicate=lambda action_type: "lead" in action_type.lower())
+    if lead_action:
+        value, cost, action_type = lead_action
+        return value, cost or safe_divide(decimal_value(row.get("spend"), ZERO), value), action_type, "Meta résultat", False
+
+    # `conversion_leads` is a dedicated Ads Insights field and is separate
+    # from the generic `actions` array. The connector has always requested it;
+    # normalize a single unambiguous value instead of silently discarding it.
+    conversion_leads = _action_stats_by_type(row.get("conversion_leads", []), default_action_type="conversion_lead")
+    conversion_costs = _action_stats_by_type(row.get("cost_per_conversion_lead", []), default_action_type="conversion_lead")
+    conversion_lead = _select_single_action(conversion_leads, conversion_costs, predicate=lambda _action_type: True)
+    if conversion_lead:
+        value, cost, action_type = conversion_lead
+        source = f"conversion_leads:{action_type}"
+        return value, cost or safe_divide(decimal_value(row.get("spend"), ZERO), value), source, "Meta résultat", False
     return None, None, "", "Meta résultat", False
 
 
@@ -190,7 +291,19 @@ def _upsert_objects(account, object_pages):
     return campaigns
 
 
-def _upsert_insight(account, connection, sync_run, raw_page, level, row, mapping_cache, campaigns):
+def _upsert_insight(
+    account,
+    connection,
+    sync_run,
+    raw_page,
+    level,
+    row,
+    mapping_cache,
+    campaigns,
+    *,
+    account_meta_result_available=False,
+    meta_result_campaign_ids=None,
+):
     level_id_fields = {
         InsightLevel.ACCOUNT: ("account_id", "account_name"),
         InsightLevel.CAMPAIGN: ("campaign_id", "campaign_name"),
@@ -201,7 +314,14 @@ def _upsert_insight(account, connection, sync_run, raw_page, level, row, mapping
     object_id = str(row.get(id_field) or account.external_id)
     campaign_id = str(row.get("campaign_id", ""))
     objective = campaigns.get(campaign_id).objective if campaigns.get(campaign_id) else ""
-    results, cpr, action_type, result_label, verified = _select_result(row, connection, mapping_cache, objective)
+    prefer_meta_result = account_meta_result_available if level == InsightLevel.ACCOUNT else campaign_id in (meta_result_campaign_ids or set())
+    results, cpr, action_type, result_label, verified = _select_result(
+        row,
+        connection,
+        mapping_cache,
+        objective,
+        prefer_meta_result=prefer_meta_result,
+    )
     attribution = {
         "action_report_time": "impression",
         "use_unified_attribution_setting": True,
@@ -292,12 +412,24 @@ def perform_sync(sync_run: SyncRun, *, connector=None) -> SyncRun:
                     raw_page_lookup[(page.endpoint, page.page_number, _checksum(page.payload))] = raw
             campaigns = _upsert_objects(account, object_pages)
             mappings = _mapping_cache(connection)
+            account_meta_result_available, meta_result_campaign_ids = _meta_result_scopes(insight_pages)
             record_count = 0
             for level, pages in insight_pages.items():
                 for page in pages:
                     raw = raw_page_lookup[(page.endpoint, page.page_number, _checksum(page.payload))]
                     for row in page.payload.get("data", []):
-                        _upsert_insight(account, connection, sync_run, raw, level, row, mappings, campaigns)
+                        _upsert_insight(
+                            account,
+                            connection,
+                            sync_run,
+                            raw,
+                            level,
+                            row,
+                            mappings,
+                            campaigns,
+                            account_meta_result_available=account_meta_result_available,
+                            meta_result_campaign_ids=meta_result_campaign_ids,
+                        )
                         record_count += 1
             for level, exc in level_errors:
                 SyncError.objects.create(

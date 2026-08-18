@@ -16,7 +16,12 @@ RETRY_DELAYS = [60, 5 * 60, 30 * 60]
 
 
 def _record_sync_failure(sync_run, exc):
-    account = sync_run.account or sync_run.connection.ad_accounts.order_by("id").first()
+    configured_id = sync_run.connection.ad_account_external_id.removeprefix("act_")
+    account = (
+        sync_run.account
+        or sync_run.connection.ad_accounts.filter(external_id=configured_id).first()
+        or sync_run.connection.ad_accounts.order_by("-id").first()
+    )
     if not account:
         return
     code = str(getattr(exc, "code", "") or "")

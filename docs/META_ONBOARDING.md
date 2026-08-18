@@ -7,9 +7,11 @@
 3. Dans le portefeuille Business ULTEx, créer un utilisateur système et lui attribuer le compte publicitaire avec la tâche de consultation/analyse.
 4. Générer un jeton avec uniquement `ads_read`. Ne pas demander `ads_management`.
 5. Relever l’identifiant du compte publicitaire dans Ads Manager; l’application accepte la valeur avec ou sans `act_`.
-6. Dans **Paramètres**, saisir l’App ID, le secret, le jeton système et l’identifiant du compte, puis cliquer sur **Tester la connexion**.
+6. Dans **Paramètres → Comptes publicitaires**, cliquer sur **Ajouter un compte**, saisir l’App ID, le secret, le jeton système et l’identifiant du compte, puis cliquer sur **Tester la connexion**.
 
 Les secrets sont chiffrés avant stockage. Le jeton complet n’est jamais renvoyé au navigateur, inscrit dans les journaux ou ajouté aux exports.
+
+Répéter cette opération pour chaque compte publicitaire. Le sélecteur **Compte Meta** dans l’en-tête détermine les données visibles sur le tableau de bord, la performance, les rapports et les appels API. La sélection est conservée dans la session. Les cycles quotidiens synchronisent séparément toutes les connexions actives.
 
 ## 2. Backfill initial de 90 jours
 
@@ -17,6 +19,7 @@ Après un test réussi, lancer une synchronisation via `POST /api/v1/syncs`:
 
 ```json
 {
+  "connection_id": 2,
   "start": "2026-05-19",
   "end": "2026-08-16",
   "levels": ["account", "campaign", "adset", "ad"],
@@ -46,4 +49,3 @@ L’intégration cible `v25.0` par configuration. Avant toute montée de version
 2. Modifier `META_GRAPH_API_VERSION`.
 3. Rejouer les tests du connecteur et un backfill de trois jours.
 4. Comparer les résultats aux rapports de production avant la bascule.
-

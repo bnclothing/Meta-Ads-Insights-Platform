@@ -1,7 +1,7 @@
 from django import forms
 from django.utils import timezone
 
-from .models import AppSettings, MetaConnection, MetricMapping
+from .models import AppSettings, ConnectionStatus, MetaConnection, MetricMapping
 
 
 class MetaConnectionForm(forms.ModelForm):
@@ -29,7 +29,13 @@ class MetaConnectionForm(forms.ModelForm):
 
     def clean_ad_account_external_id(self):
         value = self.cleaned_data["ad_account_external_id"].strip()
-        return value.removeprefix("act_")
+        value = value.removeprefix("act_")
+        duplicates = MetaConnection.objects.filter(ad_account_external_id=value)
+        if self.instance.pk:
+            duplicates = duplicates.exclude(pk=self.instance.pk)
+        if value and duplicates.exists():
+            raise forms.ValidationError("Ce compte publicitaire est déjà configuré.")
+        return value
 
     def save(self, commit=True):
         instance = super().save(commit=False)
@@ -39,6 +45,10 @@ class MetaConnectionForm(forms.ModelForm):
             instance.set_access_token(token.strip())
         if app_secret:
             instance.set_app_secret(app_secret.strip())
+        connection_fields = {"app_id", "ad_account_external_id", "api_version"}
+        if token or app_secret or connection_fields.intersection(self.changed_data):
+            instance.status = ConnectionStatus.NOT_CONFIGURED
+            instance.last_error = ""
         if commit:
             instance.save()
         return instance
@@ -75,4 +85,3 @@ class MetricMappingForm(forms.ModelForm):
         if commit:
             instance.save()
         return instance
-

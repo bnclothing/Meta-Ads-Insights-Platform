@@ -3,10 +3,25 @@
 {% block heading %}Paramètres{% endblock %}
 {% block content %}
 <div class="settings-grid">
+<section class="panel settings-card full-span">
+    <div class="panel-heading"><div><p class="eyebrow">Portefeuille Meta</p><h2>Comptes publicitaires</h2></div><a class="button primary" href="{% url 'settings' %}?new=1">Ajouter un compte</a></div>
+    <p class="settings-intro">Chaque compte conserve sa propre connexion chiffrée, ses données, ses mesures et son historique de rapports.</p>
+    <div class="connection-list">
+        {% for item in meta_connections %}
+        <a href="{% url 'settings' %}?connection={{ item.pk }}" class="connection-item {% if connection_obj.pk == item.pk and not editing_new %}selected{% endif %}">
+            <span><strong>{{ item.name }}</strong><small>act_{{ item.ad_account_external_id }}</small></span>
+            <span class="status-chip {{ item.status }}">{{ item.get_status_display }}</span>
+        </a>
+        {% empty %}
+        <p class="settings-intro">Aucun compte Meta configuré.</p>
+        {% endfor %}
+    </div>
+</section>
+
 <section class="panel settings-card">
-    <div class="panel-heading"><div><p class="eyebrow">Lecture seule</p><h2>Connexion Meta</h2></div><span class="status-chip {{ connection_obj.status }}">{{ connection_obj.get_status_display|default:"Non configurée" }}</span></div>
+    <div class="panel-heading"><div><p class="eyebrow">Lecture seule</p><h2>{% if editing_new %}Nouveau compte Meta{% else %}Connexion Meta{% endif %}</h2></div><span class="status-chip {{ connection_obj.status }}">{{ connection_obj.get_status_display|default:"Non configurée" }}</span></div>
     <p class="settings-intro">Le jeton est chiffré avant stockage. Le système n’utilise que l’autorisation <code>ads_read</code>.</p>
-    <form method="post" class="settings-form">{% csrf_token %}<input type="hidden" name="action" value="save_connection">{% for field in connection_form %}<div class="field-row"><label for="{{ field.id_for_label }}">{{ field.label }}</label>{{ field }}{% if field.help_text %}<small>{{ field.help_text }}</small>{% endif %}{{ field.errors }}</div>{% endfor %}<div class="secret-state">Jeton enregistré: <strong>{{ connection_obj.masked_token }}</strong></div><div class="form-actions"><button class="button primary" type="submit">Enregistrer</button>{% if connection_obj.pk %}<button class="button ghost" type="button" data-test-meta data-api="{% url 'api_meta_test' %}">Tester la connexion</button>{% endif %}</div><div class="inline-result" data-test-result aria-live="polite"></div></form>
+    <form method="post" class="settings-form">{% csrf_token %}<input type="hidden" name="action" value="save_connection">{% if connection_obj.pk %}<input type="hidden" name="connection_id" value="{{ connection_obj.pk }}">{% endif %}{% for field in connection_form %}<div class="field-row"><label for="{{ field.id_for_label }}">{{ field.label }}</label>{{ field }}{% if field.help_text %}<small>{{ field.help_text }}</small>{% endif %}{{ field.errors }}</div>{% endfor %}<div class="secret-state">Jeton enregistré: <strong>{{ connection_obj.masked_token }}</strong></div><div class="form-actions"><button class="button primary" type="submit">Enregistrer</button>{% if connection_obj.pk %}<button class="button ghost" type="button" data-test-meta data-connection-id="{{ connection_obj.pk }}" data-api="{% url 'api_meta_test' %}">Tester la connexion</button>{% endif %}</div><div class="inline-result" data-test-result aria-live="polite"></div></form>
 </section>
 
 <section class="panel settings-card">
@@ -17,7 +32,7 @@
 <section class="panel settings-card full-span">
     <div class="panel-heading"><div><p class="eyebrow">Onboarding Ads Manager</p><h2>Mesure de résultat principale</h2></div><span class="pill unverified">Ne jamais additionner</span></div>
     <p class="settings-intro">Associez une seule action Meta à une portée. Cochez « vérifiée » uniquement après comparaison avec Ads Manager.</p>
-    <form method="post" class="settings-form mapping-form">{% csrf_token %}<input type="hidden" name="action" value="save_mapping">{% for field in mapping_form %}<div class="field-row"><label for="{{ field.id_for_label }}">{{ field.label }}</label>{{ field }}{{ field.errors }}</div>{% endfor %}<button class="button primary" type="submit">Ajouter la mesure</button></form>
+    <form method="post" class="settings-form mapping-form">{% csrf_token %}<input type="hidden" name="action" value="save_mapping">{% if connection_obj.pk %}<input type="hidden" name="connection_id" value="{{ connection_obj.pk }}">{% endif %}{% for field in mapping_form %}<div class="field-row"><label for="{{ field.id_for_label }}">{{ field.label }}</label>{{ field }}{{ field.errors }}</div>{% endfor %}<button class="button primary" type="submit">Ajouter la mesure</button></form>
     <datalist id="actions-list">{% for action in discovered_actions %}<option value="{{ action }}">{% endfor %}</datalist>
     <div class="mapping-list">{% for mapping in mappings %}<div><span><strong>{{ mapping.get_scope_type_display }} · {{ mapping.scope_value }}</strong><small>{{ mapping.action_type }} → {{ mapping.label }}</small></span><span class="pill {% if mapping.is_verified %}active{% else %}unverified{% endif %}">{% if mapping.is_verified %}Vérifiée{% else %}À valider{% endif %}</span></div>{% empty %}<p>Aucune mesure personnalisée. Le système affichera « Meta résultat » jusqu’à validation.</p>{% endfor %}</div>
 </section>
@@ -25,4 +40,3 @@
 <section class="panel settings-card full-span operations-card"><div><p class="eyebrow">Résilience locale</p><h2>Sauvegardes</h2><p>7 sauvegardes quotidiennes et 4 hebdomadaires sont conservées.</p></div><div><span class="status-chip {{ app_settings.backup_status }}">{{ app_settings.backup_status }}</span><small>{% if app_settings.backup_last_success_at %}Dernière réussite {{ app_settings.backup_last_success_at|date:"d/m/Y H:i" }}{% else %}Aucune sauvegarde exécutée{% endif %}</small></div></section>
 </div>
 {% endblock %}
-

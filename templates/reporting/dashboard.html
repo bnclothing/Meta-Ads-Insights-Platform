@@ -3,6 +3,7 @@
 {% block title %}Vue d'ensemble — ULTEx Meta Reports{% endblock %}
 {% block date_control %}
 <form method="get" class="date-form range-form">
+    {% if selected_connection %}<input type="hidden" name="connection" value="{{ selected_connection.pk }}">{% endif %}
     <label><span>Du</span><input class="date-control" type="date" name="start" value="{{ selected_start|date:'Y-m-d' }}" aria-label="Date de début"></label>
     <label><span>Au</span><input class="date-control" type="date" name="end" value="{{ selected_end|date:'Y-m-d' }}" aria-label="Date de fin"></label>
     <button class="button primary" type="submit">Appliquer</button>
@@ -10,15 +11,37 @@
 {% endblock %}
 
 {% block content %}
-{% if not account %}
+{% if automatic_sync_enabled %}
+<div hidden data-auto-sync data-api="{% url 'api_syncs' %}" data-connection-id="{{ selected_connection.pk }}" data-start-date="{{ automatic_sync_start|date:'Y-m-d' }}" data-end-date="{{ automatic_sync_end|date:'Y-m-d' }}"></div>
+<section class="sync-loading-card" data-sync-loading aria-live="polite">
+    <div class="sync-visual" aria-hidden="true">
+        <span class="sync-ring ring-one"></span>
+        <span class="sync-ring ring-two"></span>
+        <span class="sync-mark">M</span>
+    </div>
+    <div class="sync-loading-content">
+        <p class="eyebrow">Synchronisation Meta</p>
+        <h2>Préparation de votre vue</h2>
+        <p class="sync-loading-copy" data-auto-sync-result>Connexion au compte et récupération des données de la période…</p>
+        <div class="sync-progress" role="progressbar" aria-label="Synchronisation en cours"><span></span></div>
+        <div class="sync-steps" aria-hidden="true">
+            <span class="active">Connexion sécurisée</span>
+            <span>Importation</span>
+            <span>Calcul des indicateurs</span>
+        </div>
+        <div class="sync-period"><span>Du {{ automatic_sync_start|date:"d/m/Y" }}</span><span>au {{ automatic_sync_end|date:"d/m/Y" }}</span></div>
+        <button hidden type="button" class="button ghost" data-loading-retry data-sync-now data-connection-id="{{ selected_connection.pk }}" data-start-date="{{ automatic_sync_start|date:'Y-m-d' }}" data-end-date="{{ automatic_sync_end|date:'Y-m-d' }}" data-api="{% url 'api_syncs' %}">Réessayer</button>
+    </div>
+</section>
+{% elif not account %}
 {% if connection_ready %}
 <section class="onboarding-card">
     <div class="onboarding-step">02</div>
     <div>
         <p class="eyebrow">Connexion Meta opérationnelle</p>
-        <h2>Importez votre première journée</h2>
-        <p>La connexion est prête. Importez l’historique pour récupérer le compte, les campagnes, les ensembles et les publicités.</p>
-        <button type="button" class="button primary" data-sync-now data-start-date="{{ backfill_start|date:'Y-m-d' }}" data-end-date="{{ selected_end|date:'Y-m-d' }}" data-show-latest="true" data-api="{% url 'api_syncs' %}">Importer les {{ backfill_days }} derniers jours</button>
+        <h2>Import initial en cours</h2>
+        <p data-auto-sync-result>La connexion est prête. Les {{ backfill_days }} derniers jours vont être chargés automatiquement.</p>
+        <button type="button" class="button primary" data-sync-now data-connection-id="{{ selected_connection.pk }}" data-start-date="{{ backfill_start|date:'Y-m-d' }}" data-end-date="{{ selected_end|date:'Y-m-d' }}" data-show-latest="true" data-api="{% url 'api_syncs' %}">Relancer l’import</button>
     </div>
 </section>
 {% else %}
@@ -29,10 +52,10 @@
 {% endif %}
 {% else %}
 <section class="sync-banner {% if data_state != 'complete' %}is-warning{% endif %}" data-sync-banner>
-    <div><span class="status-dot"></span><strong>{% if data_state == 'complete' %}Données complètes{% else %}Données à vérifier{% endif %}</strong> — {% if last_sync %}{{ last_sync.message }} · {{ last_sync.created_at|date:"H:i" }}{% else %}aucune synchronisation enregistrée{% endif %}</div>
+    <div data-sync-message><span class="status-dot"></span><strong>{% if data_state == 'complete' %}Données complètes{% else %}Données à vérifier{% endif %}</strong> — {% if last_sync %}{{ last_sync.message }} · {{ last_sync.created_at|date:"H:i" }}{% else %}aucune synchronisation enregistrée{% endif %}</div>
     <div class="form-actions">
-        <button type="button" class="button ghost" data-sync-now data-start-date="{{ selected_start|date:'Y-m-d' }}" data-end-date="{{ selected_end|date:'Y-m-d' }}" data-api="{% url 'api_syncs' %}">Synchroniser la période</button>
-        <button type="button" class="button ghost" data-sync-now data-start-date="{{ backfill_start|date:'Y-m-d' }}" data-end-date="{{ selected_end|date:'Y-m-d' }}" data-show-latest="true" data-api="{% url 'api_syncs' %}">Importer {{ backfill_days }} jours</button>
+        <button type="button" class="button ghost" data-sync-now data-connection-id="{{ selected_connection.pk }}" data-start-date="{{ selected_start|date:'Y-m-d' }}" data-end-date="{{ selected_end|date:'Y-m-d' }}" data-api="{% url 'api_syncs' %}">Synchroniser la période</button>
+        <button type="button" class="button ghost" data-sync-now data-connection-id="{{ selected_connection.pk }}" data-start-date="{{ backfill_start|date:'Y-m-d' }}" data-end-date="{{ selected_end|date:'Y-m-d' }}" data-show-latest="true" data-api="{% url 'api_syncs' %}">Importer {{ backfill_days }} jours</button>
     </div>
 </section>
 
@@ -89,7 +112,7 @@
     </div>
 </section>
 {% else %}
-<section class="empty-state"><div class="empty-icon">↻</div><h2>Aucune donnée pour cette période</h2><p>Lancez une synchronisation ou importez l’historique. Les valeurs manquantes ne sont jamais remplacées par zéro.</p><div class="form-actions"><button type="button" class="button primary" data-sync-now data-start-date="{{ selected_start|date:'Y-m-d' }}" data-end-date="{{ selected_end|date:'Y-m-d' }}" data-api="{% url 'api_syncs' %}">Synchroniser la période</button><button type="button" class="button ghost" data-sync-now data-start-date="{{ backfill_start|date:'Y-m-d' }}" data-end-date="{{ selected_end|date:'Y-m-d' }}" data-show-latest="true" data-api="{% url 'api_syncs' %}">Importer {{ backfill_days }} jours</button></div></section>
+<section class="empty-state"><div class="empty-icon">↻</div><h2>Aucune donnée pour cette période</h2><p data-auto-sync-result>{% if automatic_sync_enabled %}Cette période va être chargée automatiquement depuis Meta.{% else %}Cette période a été vérifiée. Meta n’a retourné aucune activité. Les valeurs manquantes ne sont jamais remplacées par zéro.{% endif %}</p><div class="form-actions"><button type="button" class="button primary" data-sync-now data-connection-id="{{ selected_connection.pk }}" data-start-date="{{ selected_start|date:'Y-m-d' }}" data-end-date="{{ selected_end|date:'Y-m-d' }}" data-api="{% url 'api_syncs' %}">Relancer la synchronisation</button><button type="button" class="button ghost" data-sync-now data-connection-id="{{ selected_connection.pk }}" data-start-date="{{ backfill_start|date:'Y-m-d' }}" data-end-date="{{ selected_end|date:'Y-m-d' }}" data-show-latest="true" data-api="{% url 'api_syncs' %}">Importer {{ backfill_days }} jours</button></div></section>
 {% endif %}
 {% endif %}
 {% endblock %}

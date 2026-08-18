@@ -4,6 +4,7 @@
 {% block content %}
 <section class="panel filter-panel">
     <form method="get" class="filter-form" hx-get="{{ request.path }}" hx-target=".main-content" hx-select=".main-content" hx-swap="outerHTML" hx-push-url="true">
+        {% if selected_connection %}<input type="hidden" name="connection" value="{{ selected_connection.pk }}">{% endif %}
         <div><label for="level">Niveau</label><select id="level" name="level">{% for value,label in levels %}<option value="{{ value }}" {% if level == value %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>
         <div><label for="start">Du</label><input id="start" type="date" name="start" value="{{ start|date:'Y-m-d' }}"></div>
         <div><label for="end">Au</label><input id="end" type="date" name="end" value="{{ end|date:'Y-m-d' }}"></div>

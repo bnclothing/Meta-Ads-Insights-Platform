@@ -1,10 +1,10 @@
 # ULTEx Meta Reports
 
-Application locale et privée de pilotage Meta Ads. Elle synchronise un compte publicitaire en lecture seule, calcule les indicateurs sans IA, détecte les variations à examiner et produit des rapports PDF/Excel versionnés.
+Application locale et privée de pilotage Meta Ads. Elle synchronise plusieurs comptes publicitaires en lecture seule, calcule les indicateurs sans IA, détecte les variations à examiner et produit des rapports PDF/Excel versionnés.
 
 ## Ce que contient le MVP
 
-- Tableau de bord quotidien en français.
+- Tableau de bord par période en français, avec sélection du compte publicitaire.
 - Détail compte, campagne, ensemble et publicité, avec filtres HTMX sans dépendance CDN.
 - Synchronisation Meta Marketing API avec pagination, historique brut et tentatives automatiques.
 - Mesure de résultat unique et vérifiable; aucune addition d’actions Meta qui se chevauchent.
@@ -20,8 +20,8 @@ Prérequis: Docker Desktop ou Docker Engine avec Compose, une adresse IP locale 
 2. Ajouter `meta-reports.local` avec l’adresse IP du serveur dans le DNS local ou le fichier `hosts` de chaque poste.
 3. Lancer `docker compose up -d --build`.
 4. Ouvrir `https://meta-reports.local` et accepter/installer l’autorité locale Caddy selon la procédure de [docs/OPERATIONS.md](docs/OPERATIONS.md).
-5. Se connecter, ouvrir **Paramètres**, enregistrer les accès Meta puis tester la connexion.
-6. Lancer le backfill initial depuis l’API ou la commande décrite dans [docs/META_ONBOARDING.md](docs/META_ONBOARDING.md).
+5. Se connecter, ouvrir **Paramètres**, ajouter chaque compte Meta puis tester chaque connexion.
+6. Sélectionner un compte dans l’en-tête et lancer son import initial de 90 jours.
 
 ## Développement sans Docker
 

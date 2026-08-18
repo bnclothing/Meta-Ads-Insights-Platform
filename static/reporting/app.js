@@ -25,12 +25,20 @@ async function postJson(url, payload = {}) {
   return data;
 }
 
-async function pollSync(id, banner) {
+function setSyncMessage(target, message) {
+  if (!target) return;
+  const messageTarget = target.matches?.("[data-sync-banner]")
+    ? (target.querySelector("[data-sync-message]") || target.querySelector("div"))
+    : target;
+  if (messageTarget) messageTarget.textContent = message;
+}
+
+async function pollSync(id, statusTarget) {
   for (let attempt = 0; attempt < 120; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 3000));
     const response = await fetch(`/api/v1/syncs/${id}`, {credentials: "same-origin"});
     const data = await response.json();
-    if (banner) banner.querySelector("div").textContent = data.message || `Synchronisation ${data.status}`;
+    setSyncMessage(statusTarget, data.message || `Synchronisation ${data.status}`);
     if (["success", "partial", "failed"].includes(data.status)) return data;
   }
   throw new Error("La synchronisation continue en arrière-plan.");
@@ -47,6 +55,7 @@ document.querySelectorAll("[data-sync-now]").forEach((button) => {
         start: button.dataset.startDate || button.dataset.endDate,
         end: button.dataset.endDate,
         levels: ["account", "campaign", "adset", "ad"],
+        connection_id: button.dataset.connectionId || undefined,
       });
       button.textContent = "Synchronisation…";
       const completed = await pollSync(data.id, banner);
@@ -60,11 +69,44 @@ document.querySelectorAll("[data-sync-now]").forEach((button) => {
       }
     } catch (error) {
       button.textContent = "Échec — réessayer";
-      if (banner) banner.querySelector("div").textContent = error.message;
+      setSyncMessage(banner, error.message);
       setTimeout(() => { button.textContent = initial; button.disabled = false; }, 4000);
     }
   });
 });
+
+const automaticSync = document.querySelector("[data-auto-sync]");
+if (automaticSync) {
+  const banner = document.querySelector("[data-sync-banner]");
+  const statusTarget = banner || document.querySelector("[data-auto-sync-result]");
+  const manualButtons = document.querySelectorAll("[data-sync-now]");
+  manualButtons.forEach((button) => { button.disabled = true; });
+  setSyncMessage(statusTarget, "Chargement automatique de cette période depuis Meta…");
+
+  (async () => {
+    try {
+      const data = await postJson(automaticSync.dataset.api, {
+        start: automaticSync.dataset.startDate,
+        end: automaticSync.dataset.endDate,
+        levels: ["account", "campaign", "adset", "ad"],
+        connection_id: automaticSync.dataset.connectionId,
+        automatic: true,
+      });
+      const completed = await pollSync(data.id, statusTarget);
+      if (completed.status === "failed") {
+        throw new Error(completed.message || "La synchronisation automatique a échoué.");
+      }
+      window.location.reload();
+    } catch (error) {
+      setSyncMessage(statusTarget, error.message);
+      document.querySelector("[data-sync-loading]")?.classList.add("is-failed");
+      manualButtons.forEach((button) => {
+        button.disabled = false;
+        if (button.matches("[data-loading-retry]")) button.hidden = false;
+      });
+    }
+  })();
+}
 
 const testButton = document.querySelector("[data-test-meta]");
 if (testButton) {
@@ -73,7 +115,7 @@ if (testButton) {
     testButton.disabled = true;
     result.textContent = "Test en cours…";
     try {
-      const data = await postJson(testButton.dataset.api);
+      const data = await postJson(testButton.dataset.api, {connection_id: testButton.dataset.connectionId});
       result.className = "inline-result success";
       result.textContent = data.message;
     } catch (error) {
