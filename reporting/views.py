@@ -28,13 +28,14 @@ from reporting.models import (
     MetaConnection,
     MetricMapping,
     ReportRun,
+    ReportScope,
     ReportVersion,
     SyncRun,
     SyncStatus,
 )
 from reporting.services.audit import record_audit
 from reporting.services.metrics import ZERO, aggregate_rows, percent_change, safe_divide
-from reporting.services.reports import generate_report
+from reporting.services.reports import generate_portfolio_report, generate_report
 from reporting.tasks import synchronize_meta
 
 
@@ -72,6 +73,23 @@ def _selected_connection(request, payload=None):
     return connection_obj
 
 
+REPORTING_ALL_SESSION_KEY = "reporting_all_meta_accounts"
+
+
+def _selected_reporting_scope(request):
+    requested = request.GET.get("connection") or request.POST.get("connection_id")
+    if requested == "all":
+        request.session[REPORTING_ALL_SESSION_KEY] = True
+        return None, True
+    if requested:
+        request.session[REPORTING_ALL_SESSION_KEY] = False
+        return _selected_connection(request), False
+    if request.session.get(REPORTING_ALL_SESSION_KEY, True):
+        request.session[REPORTING_ALL_SESSION_KEY] = True
+        return None, True
+    return _selected_connection(request), False
+
+
 def _active_account(connection_obj):
     if not connection_obj:
         return None
@@ -80,11 +98,23 @@ def _active_account(connection_obj):
     return accounts.filter(external_id=configured_id).first() or accounts.order_by("-id").first()
 
 
-def _navigation_context(connection_obj):
+def _navigation_context(connection_obj, *, allow_all=False, all_selected=False):
     return {
         "meta_connections": MetaConnection.objects.order_by("name", "id"),
         "selected_connection": connection_obj,
+        "allow_all_connections": allow_all,
+        "all_connections_selected": all_selected,
     }
+
+
+def _reporting_connections(connection_obj, all_selected):
+    if all_selected:
+        return list(MetaConnection.objects.filter(is_active=True).order_by("name", "id"))
+    return [connection_obj] if connection_obj else []
+
+
+def _reporting_accounts(connections):
+    return [account for connection_obj in connections if (account := _active_account(connection_obj))]
 
 
 SYNC_LEVELS = list(InsightLevel.values)
@@ -164,6 +194,26 @@ def _selected_range(account, request):
     return start, end
 
 
+def _selected_range_for_accounts(accounts, request):
+    latest = (
+        InsightDaily.objects.filter(account__in=accounts, level=InsightLevel.ACCOUNT)
+        .order_by("-date")
+        .values_list("date", flat=True)
+        .first()
+        if accounts
+        else None
+    )
+    fallback_end = latest or (timezone.localdate() - timedelta(days=1))
+    legacy_date = request.GET.get("date")
+    end = _parse_date(request.GET.get("end") or legacy_date, fallback_end)
+    start = _parse_date(request.GET.get("start") or legacy_date, end)
+    if start > end:
+        start, end = end, start
+    if (end - start).days > 365:
+        start = end - timedelta(days=365)
+    return start, end
+
+
 def _display_decimal(value, places="0.01"):
     if value is None:
         return "—"
@@ -177,8 +227,9 @@ def _known_result_total(rows):
     return sum(values, ZERO) if values else None
 
 
-def _dashboard_payload(account, range_start, range_end):
-    if not account:
+def _dashboard_payload(account, range_start, range_end, *, combined=False):
+    accounts = list(account) if isinstance(account, (list, tuple)) else ([account] if account else [])
+    if not accounts:
         return {
             "account": None,
             "date": range_end.isoformat(),
@@ -193,33 +244,36 @@ def _dashboard_payload(account, range_start, range_end):
             "data_state": "not_configured",
         }
 
+    currencies = {item.currency for item in accounts if item.currency}
+    mixed_currency = len(currencies) > 1
+    common_currency = next(iter(currencies)) if len(currencies) == 1 else ""
     current_rows = list(
         InsightDaily.objects.filter(
-            account=account,
+            account__in=accounts,
             level=InsightLevel.ACCOUNT,
             date__range=(range_start, range_end),
-        ).order_by("date")
+        ).order_by("date", "account_id")
     )
     period_days = (range_end - range_start).days + 1
     previous_end = range_start - timedelta(days=1)
     previous_start = previous_end - timedelta(days=period_days - 1)
     previous_rows = list(
         InsightDaily.objects.filter(
-            account=account,
+            account__in=accounts,
             level=InsightLevel.ACCOUNT,
             date__range=(previous_start, previous_end),
-        ).order_by("date")
+        ).order_by("date", "account_id")
     )
     campaign_rows = list(
-        InsightDaily.objects.filter(
-            account=account,
+        InsightDaily.objects.select_related("account").filter(
+            account__in=accounts,
             level=InsightLevel.CAMPAIGN,
             date__range=(range_start, range_end),
         ).order_by("date", "object_external_id")
     )
     previous_campaign_rows = list(
         InsightDaily.objects.filter(
-            account=account,
+            account__in=accounts,
             level=InsightLevel.CAMPAIGN,
             date__range=(previous_start, previous_end),
         ).order_by("date", "object_external_id")
@@ -230,19 +284,19 @@ def _dashboard_payload(account, range_start, range_end):
     previous_campaign_results = _known_result_total(previous_campaign_rows)
     if current_campaign_results is not None:
         current_summary["results"] = current_campaign_results
-        current_summary["cost_per_result"] = safe_divide(current_summary["spend"], current_campaign_results)
+        current_summary["cost_per_result"] = None if mixed_currency else safe_divide(current_summary["spend"], current_campaign_results)
     if previous_campaign_results is not None:
         previous_summary["results"] = previous_campaign_results
-        previous_summary["cost_per_result"] = safe_divide(previous_summary["spend"], previous_campaign_results)
+        previous_summary["cost_per_result"] = None if mixed_currency else safe_divide(previous_summary["spend"], previous_campaign_results)
 
     if current_rows:
         latest_row = current_rows[-1]
         values = [
             (
                 "Dépenses",
-                current_summary["spend"],
-                percent_change(current_summary["spend"], previous_summary["spend"]),
-                account.currency,
+                None if mixed_currency else current_summary["spend"],
+                None if mixed_currency else percent_change(current_summary["spend"], previous_summary["spend"]),
+                common_currency,
                 "money",
             ),
             (
@@ -264,7 +318,7 @@ def _dashboard_payload(account, range_start, range_end):
                     if current_summary["cost_per_result"] is not None and previous_summary["cost_per_result"] is not None
                     else None
                 ),
-                account.currency,
+                common_currency,
                 "money",
             ),
             (
@@ -278,7 +332,7 @@ def _dashboard_payload(account, range_start, range_end):
         kpis = []
         for label, value, delta, suffix, kind in values:
             if value is None:
-                display = "Manquant"
+                display = "Devises multiples" if mixed_currency and kind == "money" else "Manquant"
             elif kind == "integer":
                 display = f"{int(value):,}".replace(",", " ")
             else:
@@ -299,10 +353,11 @@ def _dashboard_payload(account, range_start, range_end):
     grouped_campaigns = {}
     for row in campaign_rows:
         group = grouped_campaigns.setdefault(
-            row.object_external_id,
+            (row.account_id, row.object_external_id),
             {
                 "id": row.object_external_id,
                 "name": row.object_name,
+                "account_name": row.account.name or row.account.external_id,
                 "currency": row.currency,
                 "rows": [],
                 "verified": True,
@@ -347,7 +402,7 @@ def _dashboard_payload(account, range_start, range_end):
         item.pop("results_value", None)
 
     alerts_qs = Anomaly.objects.filter(
-        account=account,
+        account__in=accounts,
         date__range=(range_start, range_end),
         status__in=[AnomalyStatus.OPEN, AnomalyStatus.ACKNOWLEDGED],
     )
@@ -367,35 +422,47 @@ def _dashboard_payload(account, range_start, range_end):
         ],
         key=lambda item: severity_order.get(item["severity"], 9),
     )
-    trend_qs = InsightDaily.objects.filter(
-        account=account,
-        level=InsightLevel.ACCOUNT,
-        date__range=(range_start, range_end),
-    ).order_by("date")
     campaign_results_by_date = {}
     for row in campaign_rows:
         if row.results is not None:
             campaign_results_by_date[row.date] = campaign_results_by_date.get(row.date, ZERO) + row.results
-    trend = [
-        {
-            "date": row.date.isoformat(),
-            "label": row.date.strftime("%d/%m"),
-            "spend": float(row.spend),
-            "results": (
-                float(campaign_results_by_date[row.date])
-                if row.date in campaign_results_by_date
-                else (float(row.results) if row.results is not None and not campaign_rows else None)
-            ),
-        }
-        for row in trend_qs
-    ]
+    trend_by_date = {}
+    for row in current_rows:
+        point = trend_by_date.setdefault(row.date, {"spend": ZERO, "account_results": []})
+        point["spend"] += row.spend
+        if row.results is not None:
+            point["account_results"].append(row.results)
+    trend = []
+    for day, point in sorted(trend_by_date.items()):
+        fallback_results = sum(point["account_results"], ZERO) if point["account_results"] and not campaign_rows else None
+        trend.append(
+            {
+                "date": day.isoformat(),
+                "label": day.strftime("%d/%m"),
+                "spend": None if mixed_currency else float(point["spend"]),
+                "results": float(campaign_results_by_date[day]) if day in campaign_results_by_date else (float(fallback_results) if fallback_results is not None else None),
+            }
+        )
     last_sync = (
-        SyncRun.objects.filter(account=account, requested_end__gte=range_start, requested_start__lte=range_end)
+        SyncRun.objects.filter(account__in=accounts, requested_end__gte=range_start, requested_start__lte=range_end)
         .order_by("-created_at")
         .first()
     )
+    sync_finished_without_data = bool(
+        not current_rows
+        and last_sync
+        and last_sync.status == SyncStatus.SUCCESS
+        and last_sync.requested_start <= range_start
+        and last_sync.requested_end >= range_end
+    )
     return {
-        "account": {"id": account.pk, "name": account.name, "currency": account.currency, "timezone": account.timezone_name},
+        "account": {
+            "id": None if combined else accounts[0].pk,
+            "name": "Tous les comptes Meta" if combined else accounts[0].name,
+            "currency": common_currency,
+            "timezone": accounts[0].timezone_name if len({item.timezone_name for item in accounts}) == 1 else "Plusieurs fuseaux horaires",
+            "count": len(accounts),
+        },
         "date": range_end.isoformat(),
         "start": range_start.isoformat(),
         "end": range_end.isoformat(),
@@ -405,48 +472,74 @@ def _dashboard_payload(account, range_start, range_end):
         "alerts": alerts,
         "trend": trend,
         "last_sync": last_sync,
-        "data_state": "complete" if current_rows and (not last_sync or last_sync.status == "success") else "missing",
+        "mixed_currency": mixed_currency,
+        "data_state": (
+            "empty"
+            if sync_finished_without_data
+            else ("complete" if current_rows and (not last_sync or last_sync.status == "success") else "missing")
+        ),
     }
 
 
 @login_required
 def dashboard(request):
-    connection_obj = _selected_connection(request)
-    account = _active_account(connection_obj)
+    connection_obj, all_selected = _selected_reporting_scope(request)
+    connections = _reporting_connections(connection_obj, all_selected)
+    accounts = _reporting_accounts(connections)
     app_settings = AppSettings.load()
-    range_start, range_end = _selected_range(account, request)
-    context = _dashboard_payload(account, range_start, range_end)
-    active_backfill = None if account else _backfill_sync(connection_obj, app_settings.history_backfill_days, ACTIVE_SYNC_STATUSES)
-    automatic_start = (
-        range_start
-        if account
-        else (active_backfill.requested_start if active_backfill else range_end - timedelta(days=app_settings.history_backfill_days - 1))
-    )
-    automatic_end = active_backfill.requested_end if active_backfill else range_end
-    range_already_checked = (
-        _covering_sync(connection_obj, automatic_start, automatic_end, FINISHED_SYNC_STATUSES)
-        if account
-        else _backfill_sync(connection_obj, app_settings.history_backfill_days, FINISHED_SYNC_STATUSES)
-    )
-    automatic_sync_enabled = bool(
-        connection_obj
-        and connection_obj.is_active
-        and connection_obj.status == ConnectionStatus.CONNECTED
-        and not context["current"]
-        and not range_already_checked
-    )
+    range_start, range_end = _selected_range_for_accounts(accounts, request)
+    context = _dashboard_payload(accounts if all_selected else (accounts[0] if accounts else None), range_start, range_end, combined=all_selected)
+    automatic_sync_jobs = []
+    sync_targets = []
+    for item in connections:
+        account = _active_account(item)
+        sync_targets.append({"connection_id": item.pk, "start": range_start.isoformat(), "end": range_end.isoformat()})
+        active_backfill = None if account else _backfill_sync(item, app_settings.history_backfill_days, ACTIVE_SYNC_STATUSES)
+        automatic_start = (
+            range_start
+            if account
+            else (active_backfill.requested_start if active_backfill else range_end - timedelta(days=app_settings.history_backfill_days - 1))
+        )
+        automatic_end = active_backfill.requested_end if active_backfill else range_end
+        range_already_checked = (
+            _covering_sync(item, automatic_start, automatic_end, FINISHED_SYNC_STATUSES)
+            if account
+            else _backfill_sync(item, app_settings.history_backfill_days, FINISHED_SYNC_STATUSES)
+        )
+        account_has_data = bool(
+            account
+            and InsightDaily.objects.filter(
+                account=account,
+                level=InsightLevel.ACCOUNT,
+                date__range=(range_start, range_end),
+            ).exists()
+        )
+        if item.is_active and item.status == ConnectionStatus.CONNECTED and not account_has_data and not range_already_checked:
+            automatic_sync_jobs.append(
+                {
+                    "connection_id": item.pk,
+                    "start": automatic_start,
+                    "end": automatic_end,
+                }
+            )
+    automatic_sync_enabled = bool(automatic_sync_jobs)
+    loading_start = min((job["start"] for job in automatic_sync_jobs), default=range_start)
+    loading_end = max((job["end"] for job in automatic_sync_jobs), default=range_end)
     context.update(
         {
             "active_page": "dashboard",
             "selected_start": range_start,
             "selected_end": range_end,
-            "connection_ready": bool(connection_obj and connection_obj.status == ConnectionStatus.CONNECTED),
+            "connection_ready": bool(connections) and all(item.status == ConnectionStatus.CONNECTED for item in connections),
             "backfill_days": app_settings.history_backfill_days,
             "backfill_start": range_end - timedelta(days=app_settings.history_backfill_days - 1),
             "automatic_sync_enabled": automatic_sync_enabled,
-            "automatic_sync_start": automatic_start,
-            "automatic_sync_end": automatic_end,
-            **_navigation_context(connection_obj),
+            "automatic_sync_jobs": automatic_sync_jobs,
+            "automatic_sync_start": loading_start,
+            "automatic_sync_end": loading_end,
+            "sync_targets": sync_targets,
+            "combined_accounts": all_selected,
+            **_navigation_context(connection_obj, allow_all=True, all_selected=all_selected),
         }
     )
     return render(request, "reporting/dashboard.html", context)
@@ -454,17 +547,19 @@ def dashboard(request):
 
 @login_required
 def performance(request):
-    connection_obj = _selected_connection(request)
-    account = _active_account(connection_obj)
-    end = _parse_date(request.GET.get("end"), _selected_date(account, request))
+    connection_obj, all_selected = _selected_reporting_scope(request)
+    connections = _reporting_connections(connection_obj, all_selected)
+    accounts = _reporting_accounts(connections)
+    range_start, range_end = _selected_range_for_accounts(accounts, request)
+    end = _parse_date(request.GET.get("end"), range_end)
     start = _parse_date(request.GET.get("start"), end - timedelta(days=6))
     level = request.GET.get("level", InsightLevel.CAMPAIGN)
     if level not in InsightLevel.values:
         level = InsightLevel.CAMPAIGN
     query = request.GET.get("q", "").strip()
     rows = InsightDaily.objects.none()
-    if account:
-        rows = InsightDaily.objects.filter(account=account, level=level, date__range=(start, end)).order_by("-date", "-spend")
+    if accounts:
+        rows = InsightDaily.objects.select_related("account").filter(account__in=accounts, level=level, date__range=(start, end)).order_by("-date", "-spend")
         if query:
             rows = rows.filter(Q(object_name__icontains=query) | Q(object_external_id__icontains=query))
     rows = list(rows[:500])
@@ -473,14 +568,15 @@ def performance(request):
         "reporting/performance.html",
         {
             "active_page": "performance",
-            "account": account,
+            "account": accounts[0] if len(accounts) == 1 else None,
+            "combined_accounts": all_selected,
             "rows": rows,
             "level": level,
             "levels": InsightLevel.choices,
             "start": start,
             "end": end,
             "query": query,
-            **_navigation_context(connection_obj),
+            **_navigation_context(connection_obj, allow_all=True, all_selected=all_selected),
         },
     )
 
@@ -488,38 +584,57 @@ def performance(request):
 @login_required
 @require_http_methods(["GET", "POST"])
 def reports(request):
-    connection_obj = _selected_connection(request)
-    account = _active_account(connection_obj)
+    connection_obj, all_selected = _selected_reporting_scope(request)
+    connections = _reporting_connections(connection_obj, all_selected)
+    accounts = _reporting_accounts(connections)
+    account = accounts[0] if len(accounts) == 1 and not all_selected else None
     if request.method == "POST":
-        if not account:
-            messages.error(request, "Configurez et synchronisez d’abord le compte Meta.")
+        if not accounts:
+            messages.error(request, "Configurez et synchronisez d’abord au moins un compte Meta.")
             return redirect("reports")
-        end = _parse_date(request.POST.get("end"), _selected_date(account, request))
+        _, fallback_end = _selected_range_for_accounts(accounts, request)
+        end = _parse_date(request.POST.get("end"), fallback_end)
         start = _parse_date(request.POST.get("start"), end)
         if start > end or (end - start).days > 365:
             messages.error(request, "La période demandée est invalide ou dépasse 365 jours.")
             return redirect("reports")
-        version = generate_report(account, start, end, source="manual", user=request.user)
-        record_audit(action="report.generated", user=request.user, entity=version, metadata={"start": start.isoformat(), "end": end.isoformat()}, request=request)
-        messages.success(request, f"Rapport v{version.version} généré avec succès.")
+        if all_selected:
+            version = generate_portfolio_report(accounts, start, end, source="manual", user=request.user)
+        else:
+            version = generate_report(accounts[0], start, end, source="manual", user=request.user)
+        record_audit(
+            action="report.generated",
+            user=request.user,
+            entity=version,
+            metadata={
+                "start": start.isoformat(),
+                "end": end.isoformat(),
+                "scope": "portfolio" if all_selected else "account",
+                "account_ids": [item.pk for item in accounts],
+            },
+            request=request,
+        )
+        messages.success(request, f"Rapport{' consolidé' if all_selected else ''} v{version.version} généré avec succès.")
         return redirect("reports")
-    runs = (
-        ReportRun.objects.select_related("account", "created_by")
-        .prefetch_related("versions")
-        .filter(account=account)[:100]
-        if account
-        else ReportRun.objects.none()
-    )
-    default_end = _selected_date(account, request)
+    runs_query = ReportRun.objects.select_related("account", "created_by").prefetch_related("versions", "included_accounts")
+    if all_selected:
+        runs = runs_query.filter(scope=ReportScope.PORTFOLIO)[:100]
+    elif account:
+        runs = runs_query.filter(scope=ReportScope.ACCOUNT, account=account)[:100]
+    else:
+        runs = ReportRun.objects.none()
+    _, default_end = _selected_range_for_accounts(accounts, request)
     return render(
         request,
         "reporting/reports.html",
         {
             "active_page": "reports",
             "account": account,
+            "combined_accounts": all_selected,
+            "portfolio_account_count": len(accounts),
             "runs": runs,
             "default_end": default_end,
-            **_navigation_context(connection_obj),
+            **_navigation_context(connection_obj, allow_all=True, all_selected=all_selected),
         },
     )
 
@@ -727,10 +842,10 @@ def api_sync_detail(request, sync_run_id):
 @login_required
 @require_GET
 def api_dashboard(request):
-    connection_obj = _selected_connection(request)
-    account = _active_account(connection_obj)
-    range_start, range_end = _selected_range(account, request)
-    payload = _dashboard_payload(account, range_start, range_end)
+    connection_obj, all_selected = _selected_reporting_scope(request)
+    accounts = _reporting_accounts(_reporting_connections(connection_obj, all_selected))
+    range_start, range_end = _selected_range_for_accounts(accounts, request)
+    payload = _dashboard_payload(accounts if all_selected else (accounts[0] if accounts else None), range_start, range_end, combined=all_selected)
     payload.pop("current", None)
     if payload.get("last_sync"):
         run = payload["last_sync"]
@@ -741,16 +856,17 @@ def api_dashboard(request):
 @login_required
 @require_GET
 def api_insights(request):
-    connection_obj = _selected_connection(request)
-    account = _active_account(connection_obj)
-    if not account:
+    connection_obj, all_selected = _selected_reporting_scope(request)
+    accounts = _reporting_accounts(_reporting_connections(connection_obj, all_selected))
+    if not accounts:
         return JsonResponse({"data": []})
     level = request.GET.get("level", InsightLevel.CAMPAIGN)
     if level not in InsightLevel.values:
         return JsonResponse({"error": "Niveau invalide."}, status=400)
-    end = _parse_date(request.GET.get("end"), _selected_date(account, request))
+    _, default_end = _selected_range_for_accounts(accounts, request)
+    end = _parse_date(request.GET.get("end"), default_end)
     start = _parse_date(request.GET.get("start"), end)
-    rows = InsightDaily.objects.filter(account=account, level=level, date__range=(start, end)).order_by("date", "object_name")[:2000]
+    rows = InsightDaily.objects.select_related("account").filter(account__in=accounts, level=level, date__range=(start, end)).order_by("date", "object_name")[:2000]
     data = [
         {
             "id": row.pk,
@@ -758,6 +874,8 @@ def api_insights(request):
             "level": row.level,
             "object_id": row.object_external_id,
             "name": row.object_name,
+            "account_id": row.account.external_id,
+            "account_name": row.account.name,
             "spend": row.spend,
             "results": row.results,
             "cost_per_result": row.cost_per_result,
@@ -777,30 +895,56 @@ def api_insights(request):
 @login_required
 @require_http_methods(["GET", "POST"])
 def api_reports(request):
-    connection_obj = _selected_connection(request)
-    account = _active_account(connection_obj)
     if request.method == "GET":
+        connection_obj, all_selected = _selected_reporting_scope(request)
+        accounts = _reporting_accounts(_reporting_connections(connection_obj, all_selected))
+        account = accounts[0] if len(accounts) == 1 and not all_selected else None
+        if all_selected:
+            runs = ReportRun.objects.filter(scope=ReportScope.PORTFOLIO)[:100]
+        elif account:
+            runs = ReportRun.objects.filter(scope=ReportScope.ACCOUNT, account=account)[:100]
+        else:
+            runs = []
         data = [
-            {"id": run.pk, "start": run.date_start, "end": run.date_end, "status": run.status, "versions": run.versions.count()}
-            for run in (ReportRun.objects.filter(account=account)[:100] if account else [])
+            {
+                "id": run.pk,
+                "scope": run.scope,
+                "start": run.date_start,
+                "end": run.date_end,
+                "status": run.status,
+                "versions": run.versions.count(),
+            }
+            for run in runs
         ]
         return JsonResponse({"data": data})
     payload = _json_body(request)
     if payload is None:
         return JsonResponse({"error": "JSON invalide."}, status=400)
-    connection_obj = _selected_connection(request, payload)
-    account = _active_account(connection_obj)
-    if not account:
+    all_selected = str(payload.get("connection_id", "")) == "all"
+    if all_selected:
+        request.session[REPORTING_ALL_SESSION_KEY] = True
+        connection_obj = None
+    else:
+        request.session[REPORTING_ALL_SESSION_KEY] = False
+        connection_obj = _selected_connection(request, payload)
+    accounts = _reporting_accounts(_reporting_connections(connection_obj, all_selected))
+    if not accounts:
         return JsonResponse({"error": "Aucun compte Meta synchronisé."}, status=400)
-    end = _parse_date(payload.get("end"), _selected_date(account, request))
+    _, fallback_end = _selected_range_for_accounts(accounts, request)
+    end = _parse_date(payload.get("end"), fallback_end)
     start = _parse_date(payload.get("start"), end)
     if start > end or (end - start).days > 365:
         return JsonResponse({"error": "Période invalide ou supérieure à 365 jours."}, status=400)
-    version = generate_report(account, start, end, source="api", user=request.user)
+    version = (
+        generate_portfolio_report(accounts, start, end, source="api", user=request.user)
+        if all_selected
+        else generate_report(accounts[0], start, end, source="api", user=request.user)
+    )
     return JsonResponse(
         {
             "id": version.pk,
             "report_run_id": version.report_run_id,
+            "scope": version.report_run.scope,
             "version": version.version,
             "snapshot_hash": version.snapshot_hash,
             "pdf": reverse("download_report", args=[version.pk, "pdf"]),

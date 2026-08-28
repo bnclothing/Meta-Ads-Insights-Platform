@@ -70,6 +70,11 @@ class ReportStatus(models.TextChoices):
     FAILED = "failed", "Échec"
 
 
+class ReportScope(models.TextChoices):
+    ACCOUNT = "account", "Compte Meta"
+    PORTFOLIO = "portfolio", "Tous les comptes Meta"
+
+
 class MetaConnection(TimestampedModel):
     name = models.CharField(max_length=120, default="Compte Meta ULTEx")
     app_id = models.CharField(max_length=80, blank=True)
@@ -343,7 +348,9 @@ class Anomaly(TimestampedModel):
 
 
 class ReportRun(TimestampedModel):
-    account = models.ForeignKey(AdAccount, on_delete=models.CASCADE, related_name="reports")
+    account = models.ForeignKey(AdAccount, null=True, blank=True, on_delete=models.CASCADE, related_name="reports")
+    included_accounts = models.ManyToManyField(AdAccount, blank=True, related_name="portfolio_reports")
+    scope = models.CharField(max_length=16, choices=ReportScope.choices, default=ReportScope.ACCOUNT)
     date_start = models.DateField()
     date_end = models.DateField()
     status = models.CharField(max_length=20, choices=ReportStatus.choices, default=ReportStatus.PENDING)
@@ -353,8 +360,23 @@ class ReportRun(TimestampedModel):
 
     class Meta:
         ordering = ["-date_end", "-created_at"]
-        indexes = [models.Index(fields=["account", "-date_end"])]
-        constraints = [models.UniqueConstraint(fields=["account", "date_start", "date_end"], name="uniq_report_account_period")]
+        indexes = [models.Index(fields=["account", "-date_end"]), models.Index(fields=["scope", "-date_end"])]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["account", "date_start", "date_end"],
+                condition=models.Q(scope=ReportScope.ACCOUNT),
+                name="uniq_report_account_period",
+            ),
+            models.UniqueConstraint(
+                fields=["date_start", "date_end"],
+                condition=models.Q(scope=ReportScope.PORTFOLIO),
+                name="uniq_report_portfolio_period",
+            ),
+        ]
+
+    @property
+    def is_portfolio(self):
+        return self.scope == ReportScope.PORTFOLIO
 
 
 def report_upload_path(instance, filename):

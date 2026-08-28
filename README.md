@@ -23,6 +23,8 @@ Prérequis: Docker Desktop ou Docker Engine avec Compose, une adresse IP locale 
 5. Se connecter, ouvrir **Paramètres**, ajouter chaque compte Meta puis tester chaque connexion.
 6. Sélectionner un compte dans l’en-tête et lancer son import initial de 90 jours.
 
+
+
 ## Développement sans Docker
 
 Une base SQLite est utilisée quand les variables PostgreSQL sont absentes.

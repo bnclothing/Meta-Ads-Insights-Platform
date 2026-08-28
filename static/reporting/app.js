@@ -75,27 +75,58 @@ document.querySelectorAll("[data-sync-now]").forEach((button) => {
   });
 });
 
-const automaticSync = document.querySelector("[data-auto-sync]");
-if (automaticSync) {
+function pageSyncTargets() {
+  const source = document.getElementById("sync-targets");
+  return source ? JSON.parse(source.textContent || "[]") : [];
+}
+
+async function synchronizeTargets(targets, api, statusTarget, automatic = false) {
+  const runs = await Promise.all(targets.map((target) => postJson(api, {
+    start: target.start,
+    end: target.end,
+    levels: ["account", "campaign", "adset", "ad"],
+    connection_id: target.connection_id,
+    automatic,
+  })));
+  const completed = await Promise.all(runs.map((run) => pollSync(run.id, statusTarget)));
+  const failed = completed.find((run) => run.status === "failed");
+  if (failed) throw new Error(failed.message || "La synchronisation d’un compte a échoué.");
+  return completed;
+}
+
+document.querySelectorAll("[data-sync-all]").forEach((button) => {
+  button.addEventListener("click", async () => {
+    const initial = button.textContent;
+    const banner = document.querySelector("[data-sync-banner]");
+    button.disabled = true;
+    button.textContent = "Synchronisation de tous les comptes…";
+    try {
+      await synchronizeTargets(pageSyncTargets(), button.dataset.api, banner);
+      window.location.reload();
+    } catch (error) {
+      button.textContent = "Échec — réessayer";
+      setSyncMessage(banner || document.querySelector("[data-auto-sync-result]"), error.message);
+      setTimeout(() => { button.textContent = initial; button.disabled = false; }, 4000);
+    }
+  });
+});
+
+const automaticSyncs = [...document.querySelectorAll("[data-auto-sync]")];
+if (automaticSyncs.length) {
   const banner = document.querySelector("[data-sync-banner]");
   const statusTarget = banner || document.querySelector("[data-auto-sync-result]");
-  const manualButtons = document.querySelectorAll("[data-sync-now]");
+  const manualButtons = document.querySelectorAll("[data-sync-now], [data-sync-all]");
   manualButtons.forEach((button) => { button.disabled = true; });
-  setSyncMessage(statusTarget, "Chargement automatique de cette période depuis Meta…");
+  setSyncMessage(statusTarget, `Chargement automatique depuis Meta — ${automaticSyncs.length} compte(s)…`);
 
   (async () => {
     try {
-      const data = await postJson(automaticSync.dataset.api, {
-        start: automaticSync.dataset.startDate,
-        end: automaticSync.dataset.endDate,
-        levels: ["account", "campaign", "adset", "ad"],
-        connection_id: automaticSync.dataset.connectionId,
-        automatic: true,
-      });
-      const completed = await pollSync(data.id, statusTarget);
-      if (completed.status === "failed") {
-        throw new Error(completed.message || "La synchronisation automatique a échoué.");
-      }
+      const targets = automaticSyncs.map((item) => ({
+        connection_id: item.dataset.connectionId,
+        start: item.dataset.startDate,
+        end: item.dataset.endDate,
+      }));
+      await synchronizeTargets(targets, automaticSyncs[0].dataset.api, statusTarget, true);
       window.location.reload();
     } catch (error) {
       setSyncMessage(statusTarget, error.message);
@@ -139,19 +170,19 @@ function initializeTrendChart() {
     data: {
       labels: data.map((row) => row.label),
       datasets: [
-        {type: "bar", label: "Dépenses", data: data.map((row) => row.spend), backgroundColor: "rgba(10,123,97,.20)", borderColor: "#0a7b61", borderWidth: 1, borderRadius: 5, yAxisID: "y"},
-        {type: "line", label: "Résultats", data: data.map((row) => row.results), borderColor: "#f26b51", backgroundColor: "#f26b51", borderWidth: 2.5, pointRadius: 2.5, tension: .32, spanGaps: false, yAxisID: "y1"},
+        {type: "bar", label: "Dépenses", data: data.map((row) => row.spend), backgroundColor: "rgba(1,89,163,.20)", borderColor: "#0159a3", borderWidth: 1, borderRadius: 5, yAxisID: "y"},
+        {type: "line", label: "Résultats", data: data.map((row) => row.results), borderColor: "#ffc90d", backgroundColor: "#ffc90d", borderWidth: 2.5, pointRadius: 2.5, tension: .32, spanGaps: false, yAxisID: "y1"},
       ],
     },
     options: {
       responsive: true,
       maintainAspectRatio: false,
       interaction: {mode: "index", intersect: false},
-      plugins: {legend: {display: false}, tooltip: {backgroundColor: "#14302a", padding: 10}},
+      plugins: {legend: {display: false}, tooltip: {backgroundColor: "#004472", padding: 10}},
       scales: {
         x: {grid: {display: false}, ticks: {color: "#7d8a86", maxRotation: 0}},
         y: {beginAtZero: true, grid: {color: "#edf1ef"}, ticks: {color: "#7d8a86"}},
-        y1: {beginAtZero: true, position: "right", grid: {drawOnChartArea: false}, ticks: {color: "#f26b51"}},
+        y1: {beginAtZero: true, position: "right", grid: {drawOnChartArea: false}, ticks: {color: "#a87300"}},
       },
     },
   });

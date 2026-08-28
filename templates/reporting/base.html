@@ -12,9 +12,8 @@
 <body>
     <div class="app-shell">
         <aside class="sidebar" aria-label="Navigation principale">
-            <a class="brand" href="{% url 'dashboard' %}">
-                <span class="brand-mark">U</span>
-                <span><strong>ULTEx</strong><small>Meta Reports</small></span>
+            <a class="brand brand-logo-frame" href="{% url 'dashboard' %}" aria-label="ULTEx Meta Reports — Accueil">
+                <img class="brand-logo" src="{% static 'reporting/brand/ultex-logo.png' %}" alt="ULTEx — Universal Logistics & Trade Experts">
             </a>
             <nav class="nav-list">
                 <a class="{% if active_page == 'dashboard' %}active{% endif %}" href="{% url 'dashboard' %}"><span>◫</span> Vue d'ensemble</a>
@@ -39,6 +38,7 @@
                     <form method="get" class="account-switcher">
                         <label for="account-switcher">Compte Meta</label>
                         <select id="account-switcher" name="connection" onchange="this.form.submit()" aria-label="Compte publicitaire Meta affiché">
+                            {% if allow_all_connections %}<option value="all" {% if all_connections_selected %}selected{% endif %}>Tous les comptes · Vue consolidée</option>{% endif %}
                             {% for item in meta_connections %}
                             <option value="{{ item.pk }}" {% if selected_connection and selected_connection.pk == item.pk %}selected{% endif %}>{{ item.name }} · {{ item.ad_account_external_id }}</option>
                             {% endfor %}

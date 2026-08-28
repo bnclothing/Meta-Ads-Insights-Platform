@@ -3,8 +3,8 @@
 {% block heading %}Rapports et historique{% endblock %}
 {% block content %}
 <section class="report-builder">
-    <div><p class="eyebrow">Export immuable</p><h2>Générer un rapport</h2><p>Le PDF et l’Excel utiliseront exactement le même instantané de données.</p></div>
-    <form method="post" class="inline-form">{% csrf_token %}{% if selected_connection %}<input type="hidden" name="connection_id" value="{{ selected_connection.pk }}">{% endif %}<label>Du<input type="date" name="start" value="{{ default_end|date:'Y-m-d' }}" required></label><label>Au<input type="date" name="end" value="{{ default_end|date:'Y-m-d' }}" required></label><button class="button primary" type="submit">Générer les exports</button></form>
+    <div><p class="eyebrow">Export immuable</p><h2>{% if combined_accounts %}Générer un rapport consolidé{% else %}Générer un rapport{% endif %}</h2><p>{% if combined_accounts %}Les {{ portfolio_account_count }} comptes Meta seront fusionnés dans un même instantané traçable.{% else %}Le PDF et l’Excel utiliseront exactement le même instantané de données.{% endif %}</p></div>
+    <form method="post" class="inline-form">{% csrf_token %}<input type="hidden" name="connection_id" value="{% if all_connections_selected %}all{% else %}{{ selected_connection.pk }}{% endif %}"><label>Du<input type="date" name="start" value="{{ default_end|date:'Y-m-d' }}" required></label><label>Au<input type="date" name="end" value="{{ default_end|date:'Y-m-d' }}" required></label><button class="button primary" type="submit">{% if combined_accounts %}Générer le rapport consolidé{% else %}Générer les exports{% endif %}</button></form>
 </section>
 
 <section class="panel report-list">
@@ -12,7 +12,7 @@
     {% for run in runs %}
     <article class="report-row">
         <div class="report-date"><strong>{{ run.date_end|date:"d" }}</strong><span>{{ run.date_end|date:"M Y" }}</span></div>
-        <div class="report-info"><strong>{% if run.date_start == run.date_end %}Rapport quotidien{% else %}Rapport de période{% endif %}</strong><p>{{ run.date_start|date:"d/m/Y" }} — {{ run.date_end|date:"d/m/Y" }} · {{ run.account.name }}</p><small>Créé {{ run.created_at|date:"d/m/Y H:i" }}{% if run.created_by %} par {{ run.created_by.username }}{% endif %}</small></div>
+        <div class="report-info"><strong>{% if run.is_portfolio %}Rapport consolidé{% elif run.date_start == run.date_end %}Rapport quotidien{% else %}Rapport de période{% endif %}</strong><p>{{ run.date_start|date:"d/m/Y" }} — {{ run.date_end|date:"d/m/Y" }} · {% if run.is_portfolio %}Tous les comptes Meta ({{ run.included_accounts.count }}){% else %}{{ run.account.name }}{% endif %}</p><small>Créé {{ run.created_at|date:"d/m/Y H:i" }}{% if run.created_by %} par {{ run.created_by.username }}{% endif %}</small></div>
         <span class="status-chip {{ run.status }}">{{ run.get_status_display }}</span>
         <div class="report-versions">{% for version in run.versions.all %}<div><span>v{{ version.version }} · {{ version.snapshot_hash|slice:":8" }}</span>{% if version.pdf_file %}<a class="file-link" href="{% url 'download_report' version.id 'pdf' %}">PDF</a>{% endif %}{% if version.excel_file %}<a class="file-link excel" href="{% url 'download_report' version.id 'excel' %}">Excel</a>{% endif %}</div>{% empty %}<span>Aucune version prête</span>{% endfor %}</div>
     </article>

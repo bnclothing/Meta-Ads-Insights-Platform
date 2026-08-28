@@ -9,7 +9,7 @@
 </head>
 <body class="login-body">
     <main class="login-card">
-        <div class="brand login-brand"><span class="brand-mark">U</span><span><strong>ULTEx</strong><small>Meta Reports</small></span></div>
+        <div class="brand login-brand"><img class="brand-logo" src="{% static 'reporting/brand/ultex-logo.png' %}" alt="ULTEx — Universal Logistics & Trade Experts"></div>
         <div><p class="eyebrow">Espace privé</p><h1>Connectez-vous</h1><p class="login-copy">Accédez au suivi quotidien de vos campagnes Meta.</p></div>
         {% if form.errors %}<div class="form-error">Identifiant ou mot de passe incorrect.</div>{% endif %}
         <form method="post" class="login-form">
@@ -24,4 +24,3 @@
     </main>
 </body>
 </html>
-

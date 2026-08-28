@@ -51,6 +51,32 @@ class AuthenticationAndApiTests(TestCase):
         )
         self.assertEqual(response.status_code, 400)
 
+    def test_reports_page_defaults_to_consolidated_portfolio(self):
+        for external_id, name in (("account-one", "Compte un"), ("account-two", "Compte deux")):
+            connection = MetaConnection.objects.create(
+                name=name,
+                ad_account_external_id=external_id,
+                status=ConnectionStatus.CONNECTED,
+            )
+            AdAccount.objects.create(
+                connection=connection,
+                external_id=external_id,
+                name=name,
+                currency="USD",
+            )
+        self.client.force_login(self.user)
+
+        response = self.client.get(reverse("reports"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.context["all_connections_selected"])
+        self.assertTrue(response.context["combined_accounts"])
+        self.assertContains(response, "Générer un rapport consolidé")
+        self.assertContains(response, "Les 2 comptes Meta seront fusionnés")
+        self.assertContains(response, 'name="connection_id" value="all"')
+        self.assertContains(response, 'class="brand-logo"')
+        self.assertContains(response, "reporting/brand/ultex-logo.")
+
     def test_connected_connection_without_account_starts_initial_sync_automatically(self):
         MetaConnection.objects.create(
             name="Meta",
@@ -65,10 +91,44 @@ class AuthenticationAndApiTests(TestCase):
         self.assertContains(response, "Préparation de votre vue")
         self.assertContains(response, "sync-loading-card")
         self.assertContains(response, "data-auto-sync")
-        self.assertContains(response, "data-sync-now")
+        self.assertContains(response, "data-sync-all")
         self.assertContains(response, "Connexion au compte et récupération des données")
         self.assertContains(response, 'data-start-date="2026-05-19"')
         self.assertNotContains(response, "Configurer Meta")
+
+    def test_finished_empty_sync_shows_clear_no_results_page(self):
+        connection = MetaConnection.objects.create(
+            name="Meta vide",
+            ad_account_external_id="empty-account",
+            status=ConnectionStatus.CONNECTED,
+            is_active=True,
+        )
+        account = AdAccount.objects.create(
+            connection=connection,
+            external_id="empty-account",
+            name="Compte vide",
+            currency="USD",
+        )
+        SyncRun.objects.create(
+            connection=connection,
+            account=account,
+            requested_start=date(2026, 8, 16),
+            requested_end=date(2026, 8, 16),
+            levels=list(InsightLevel.values),
+            status=SyncStatus.SUCCESS,
+            message="Synchronisation terminée.",
+        )
+        self.client.force_login(self.user)
+
+        response = self.client.get(
+            reverse("dashboard"),
+            {"connection": connection.pk, "start": "2026-08-16", "end": "2026-08-16"},
+        )
+
+        self.assertEqual(response.context["data_state"], "empty")
+        self.assertContains(response, "Aucun résultat trouvé")
+        self.assertContains(response, "Synchronisation terminée")
+        self.assertNotContains(response, "Données à vérifier")
 
     def test_successful_connection_test_queues_initial_90_day_backfill(self):
         connection = MetaConnection.objects.create(
@@ -187,9 +247,136 @@ class AuthenticationAndApiTests(TestCase):
         current = AdAccount.objects.create(connection=connection, external_id="new-account", name="Compte actuel")
         self.client.force_login(self.user)
 
-        response = self.client.get(reverse("dashboard"), {"date": "2026-08-16"})
+        response = self.client.get(reverse("dashboard"), {"connection": connection.pk, "date": "2026-08-16"})
 
         self.assertEqual(response.context["account"]["id"], current.pk)
+
+    def test_all_accounts_are_combined_by_default_and_can_be_filtered(self):
+        first_connection = MetaConnection.objects.create(
+            name="Premier",
+            ad_account_external_id="111",
+            status=ConnectionStatus.CONNECTED,
+        )
+        second_connection = MetaConnection.objects.create(
+            name="Deuxième",
+            ad_account_external_id="222",
+            status=ConnectionStatus.CONNECTED,
+        )
+        first_account = AdAccount.objects.create(connection=first_connection, external_id="111", name="Compte A", currency="USD")
+        second_account = AdAccount.objects.create(connection=second_connection, external_id="222", name="Compte B", currency="USD")
+
+        for account, object_id, spend, results, impressions in [
+            (first_account, "campaign-a", "10", "1", 100),
+            (second_account, "campaign-b", "20", "2", 200),
+        ]:
+            InsightDaily.objects.create(
+                account=account,
+                level=InsightLevel.ACCOUNT,
+                object_external_id=account.external_id,
+                object_name=account.name,
+                date=date(2026, 8, 16),
+                currency="USD",
+                spend=Decimal(spend),
+                impressions=impressions,
+                results=Decimal(results),
+                cost_per_result=Decimal(spend) / Decimal(results),
+            )
+            InsightDaily.objects.create(
+                account=account,
+                level=InsightLevel.CAMPAIGN,
+                object_external_id=object_id,
+                object_name=f"Campagne {account.name}",
+                date=date(2026, 8, 16),
+                currency="USD",
+                spend=Decimal(spend),
+                impressions=impressions,
+                results=Decimal(results),
+                cost_per_result=Decimal(spend) / Decimal(results),
+                result_action_type="meta_objective:lead",
+            )
+        self.client.force_login(self.user)
+
+        combined = self.client.get(reverse("dashboard"), {"start": "2026-08-16", "end": "2026-08-16"})
+
+        self.assertTrue(combined.context["all_connections_selected"])
+        self.assertTrue(combined.context["combined_accounts"])
+        self.assertEqual(combined.context["account"]["count"], 2)
+        self.assertEqual(combined.context["kpis"][0]["value"], "30.00")
+        self.assertEqual(combined.context["kpis"][1]["value"], "3.00")
+        self.assertEqual(combined.context["kpis"][3]["value"], "300")
+        self.assertEqual(len(combined.context["campaigns"]), 2)
+        self.assertContains(combined, "Tous les comptes · Vue consolidée")
+
+        filtered = self.client.get(
+            reverse("dashboard"),
+            {"connection": first_connection.pk, "start": "2026-08-16", "end": "2026-08-16"},
+        )
+
+        self.assertFalse(filtered.context["all_connections_selected"])
+        self.assertEqual(filtered.context["account"]["id"], first_account.pk)
+        self.assertEqual(filtered.context["kpis"][0]["value"], "10.00")
+        self.assertEqual(filtered.context["kpis"][1]["value"], "1.00")
+
+    def test_combined_dashboard_does_not_sum_different_currencies(self):
+        first_connection = MetaConnection.objects.create(
+            name="USD",
+            ad_account_external_id="usd-account",
+            status=ConnectionStatus.CONNECTED,
+        )
+        second_connection = MetaConnection.objects.create(
+            name="MAD",
+            ad_account_external_id="mad-account",
+            status=ConnectionStatus.CONNECTED,
+        )
+        first_account = AdAccount.objects.create(
+            connection=first_connection,
+            external_id="usd-account",
+            name="Compte USD",
+            currency="USD",
+        )
+        second_account = AdAccount.objects.create(
+            connection=second_connection,
+            external_id="mad-account",
+            name="Compte MAD",
+            currency="MAD",
+        )
+        for account, spend, results in [
+            (first_account, "10", "1"),
+            (second_account, "100", "2"),
+        ]:
+            InsightDaily.objects.create(
+                account=account,
+                level=InsightLevel.ACCOUNT,
+                object_external_id=account.external_id,
+                object_name=account.name,
+                date=date(2026, 8, 16),
+                currency=account.currency,
+                spend=Decimal(spend),
+                impressions=100,
+                results=Decimal(results),
+            )
+            InsightDaily.objects.create(
+                account=account,
+                level=InsightLevel.CAMPAIGN,
+                object_external_id=f"campaign-{account.external_id}",
+                object_name=f"Campagne {account.name}",
+                date=date(2026, 8, 16),
+                currency=account.currency,
+                spend=Decimal(spend),
+                impressions=100,
+                results=Decimal(results),
+                result_action_type="meta_objective:lead",
+            )
+        self.client.force_login(self.user)
+
+        response = self.client.get(reverse("dashboard"), {"start": "2026-08-16", "end": "2026-08-16"})
+
+        self.assertTrue(response.context["mixed_currency"])
+        self.assertEqual(response.context["kpis"][0]["value"], "Devises multiples")
+        self.assertEqual(response.context["kpis"][1]["value"], "3.00")
+        self.assertEqual(response.context["kpis"][2]["value"], "Devises multiples")
+        self.assertEqual(response.context["kpis"][3]["value"], "200")
+        self.assertContains(response, "Portefeuille multidevise")
 
     def test_dashboard_aggregates_selected_range_and_compares_previous_range(self):
         connection = MetaConnection.objects.create(

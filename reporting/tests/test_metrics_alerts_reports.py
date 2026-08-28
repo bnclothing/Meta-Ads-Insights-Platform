@@ -14,6 +14,7 @@ from reporting.models import (
     MetaConnection,
     RawApiPayload,
     ReportRun,
+    ReportScope,
     ReportStatus,
     Severity,
     SyncRun,
@@ -21,7 +22,7 @@ from reporting.models import (
 )
 from reporting.services.alerts import evaluate_alerts
 from reporting.services.metrics import aggregate_rows
-from reporting.services.reports import generate_report
+from reporting.services.reports import generate_portfolio_report, generate_report
 
 
 class MetricsAlertsAndReportsTests(TestCase):
@@ -119,7 +120,54 @@ class MetricsAlertsAndReportsTests(TestCase):
                 ["Résumé", "Tendance quotidienne", "Campagnes", "Ensembles", "Publicités", "Alertes", "Synchronisations"],
             )
             self.assertEqual(Decimal(str(workbook["Résumé"]["B9"].value)), Decimal(version.snapshot["kpis"]["spend"]))
+            self.assertEqual(workbook["Résumé"]["D1"].value, "ULTEX · META REPORTS")
+            self.assertEqual(len(workbook["Résumé"]._images), 1)
             self.assertEqual(workbook["Tendance quotidienne"]["I2"].value, version.snapshot["trend"][0]["id"])
+
+    def test_portfolio_report_merges_accounts_and_keeps_source_traceability(self):
+        day = date(2026, 8, 14)
+        self._report_fixture(day)
+        self._insight(day, level=InsightLevel.CAMPAIGN, object_id="campaign-first", spend=Decimal("123.45"), results=Decimal("9"))
+        second_connection = MetaConnection.objects.create(name="Meta 2", ad_account_external_id="789", api_version="v25.0")
+        second_account = AdAccount.objects.create(
+            connection=second_connection,
+            external_id="789",
+            name="ULTEx Second",
+            currency="MAD",
+            timezone_name="Africa/Casablanca",
+        )
+        for level, object_id in ((InsightLevel.ACCOUNT, "789"), (InsightLevel.CAMPAIGN, "campaign-second")):
+            InsightDaily.objects.create(
+                account=second_account,
+                level=level,
+                object_external_id=object_id,
+                object_name="ULTEx Second" if level == InsightLevel.ACCOUNT else "Campagne Second",
+                date=day,
+                currency="MAD",
+                spend=Decimal("50"),
+                impressions=500,
+                reach=400,
+                clicks=20,
+                results=Decimal("2"),
+                cost_per_result=Decimal("25"),
+                result_action_type="onsite_conversion.lead_grouped",
+                result_verified=True,
+            )
+
+        with tempfile.TemporaryDirectory() as media_root, override_settings(MEDIA_ROOT=media_root):
+            version = generate_portfolio_report([self.account, second_account], day, day)
+            self.assertEqual(version.report_run.scope, ReportScope.PORTFOLIO)
+            self.assertEqual(version.report_run.included_accounts.count(), 2)
+            self.assertTrue(version.snapshot["account"]["combined"])
+            self.assertEqual(version.snapshot["account"]["count"], 2)
+            self.assertEqual(Decimal(version.snapshot["kpis"]["spend"]), Decimal("173.45"))
+            self.assertEqual(Decimal(version.snapshot["kpis"]["results"]), Decimal("11.00"))
+            with version.excel_file.open("rb") as stream:
+                workbook = load_workbook(stream, data_only=False)
+            self.assertEqual(workbook["Campagnes"]["A1"].value, "Compte Meta")
+            self.assertEqual({workbook["Campagnes"]["A2"].value, workbook["Campagnes"]["A3"].value}, {"ULTEx Test", "ULTEx Second"})
+            with version.pdf_file.open("rb") as stream:
+                self.assertTrue(stream.read().startswith(b"%PDF"))
 
     def test_report_failure_is_persisted_and_raises_critical_alert(self):
         day = date(2026, 8, 13)
