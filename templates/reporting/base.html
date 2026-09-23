@@ -17,6 +17,7 @@
             </a>
             <nav class="nav-list">
                 <a class="{% if active_page == 'dashboard' %}active{% endif %}" href="{% url 'dashboard' %}"><span>◫</span> Vue d'ensemble</a>
+                <a class="{% if active_page == 'data_sheet' %}active{% endif %}" href="{% url 'data_sheet' %}"><span>▦</span> DATA Sheet</a>
                 <a class="{% if active_page == 'performance' %}active{% endif %}" href="{% url 'performance' %}"><span>↗</span> Performance</a>
                 <a class="{% if active_page == 'reports' %}active{% endif %}" href="{% url 'reports' %}"><span>▤</span> Rapports</a>
                 <a href="{% url 'dashboard' %}#alertes"><span>⚑</span> Alertes</a>
@@ -30,7 +31,7 @@
         <main class="main-content">
             <header class="topbar">
                 <div>
-                    <p class="eyebrow">Pilotage publicitaire</p>
+                    <p class="eyebrow">{% block eyebrow %}Pilotage publicitaire{% endblock %}</p>
                     <h1>{% block heading %}Vue d'ensemble{% endblock %}</h1>
                 </div>
                 <div class="topbar-actions">

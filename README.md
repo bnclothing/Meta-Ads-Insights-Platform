@@ -5,8 +5,9 @@ Application locale et privée de pilotage Meta Ads. Elle synchronise plusieurs c
 ## Ce que contient le MVP
 
 - Tableau de bord par période en français, avec sélection du compte publicitaire.
+- Suivi des leads du classeur DATA par feuille et période, avec lecture Google Sheets en temps réel.
 - Détail compte, campagne, ensemble et publicité, avec filtres HTMX sans dépendance CDN.
-- Synchronisation Meta Marketing API avec pagination, historique brut et tentatives automatiques.
+- Synchronisation Meta Marketing API à chaque chargement du tableau de bord et toutes les heures, avec pagination, historique brut et tentatives automatiques.
 - Mesure de résultat unique et vérifiable; aucune addition d’actions Meta qui se chevauchent.
 - Alertes déterministes avec seuils modifiables.
 - Rapports immuables PDF/Excel et traçabilité vers les données API.
@@ -57,3 +58,4 @@ La suite automatisée couvre notamment le chiffrement, la suppression des secret
 - [Exploitation, sauvegardes et sécurité](docs/OPERATIONS.md)
 - [Recette et critères d’acceptation](docs/ACCEPTANCE.md)
 - [API interne](docs/API.md)
+- [Connexion du classeur DATA Google Sheets](docs/DATA_SHEET_SETUP.md)

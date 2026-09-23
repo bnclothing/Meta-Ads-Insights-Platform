@@ -1,0 +1,111 @@
+{% extends "reporting/base.html" %}
+{% block title %}DATA Sheet — ULTEx Meta Reports{% endblock %}
+{% block eyebrow %}Pilotage des leads{% endblock %}
+{% block heading %}DATA Sheet{% endblock %}
+{% block content %}
+<section class="panel data-filter-panel">
+    <form method="get" class="data-filter-form">
+        <div>
+            <label for="source">Feuille</label>
+            <select id="source" name="source">
+                {% for value,label in source_choices %}<option value="{{ value }}" {% if source == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+            </select>
+        </div>
+        <div><label for="start">Du</label><input id="start" type="date" name="start" value="{{ range_start|date:'Y-m-d' }}"></div>
+        <div><label for="end">Au</label><input id="end" type="date" name="end" value="{{ range_end|date:'Y-m-d' }}"></div>
+        <div class="search-field"><label for="q">Recherche</label><input id="q" name="q" value="{{ query }}" placeholder="Code, client, téléphone, produit ou statut…"></div>
+        <button class="button primary" type="submit">Afficher</button>
+    </form>
+</section>
+
+{% if connection_error %}
+<section class="panel data-connection-card" role="alert">
+    <div class="empty-icon">↯</div>
+    <div>
+        <p class="eyebrow">Connexion requise</p>
+        <h2>La feuille ne peut pas encore être lue</h2>
+        <p>{{ connection_error }}</p>
+        <small>La page reste privée et nécessite uniquement un accès Google en lecture seule.</small>
+    </div>
+</section>
+{% else %}
+<section class="data-source-strip">
+    <div>
+        <span class="status-dot"></span>
+        <span><strong>{% if dataset.mode == 'google' %}Google Sheets en direct{% else %}Aperçu du fichier DATA local{% endif %}</strong><small>{{ source_label }}{% if is_consolidated %} · 3 feuilles{% endif %} · lu le {{ dataset.fetched_at|date:"d/m/Y à H:i:s" }}</small></span>
+    </div>
+    <a class="button ghost" href="?{{ preserved_query }}&refresh=1">Actualiser maintenant</a>
+</section>
+
+<section class="kpi-grid data-kpi-grid" aria-label="Indicateurs des leads">
+    {% for kpi in kpis %}
+    <article class="kpi-card">
+        <div class="kpi-label"><span>{{ kpi.label }}</span><span>●</span></div>
+        <strong>{{ kpi.value }}</strong>
+        <p class="delta neutral">{{ kpi.note }}</p>
+    </article>
+    {% endfor %}
+</section>
+
+{% if is_consolidated %}
+<section class="data-source-breakdown" aria-label="Répartition des leads par feuille">
+    {% for item in source_breakdown %}
+    <a href="?source={{ item.key }}&start={{ range_start|date:'Y-m-d' }}&end={{ range_end|date:'Y-m-d' }}&q={{ query|urlencode }}">
+        <span><strong>{{ item.label }}</strong><small>{{ item.share }} % de la sélection</small></span>
+        <b>{{ item.count }}</b>
+    </a>
+    {% endfor %}
+</section>
+{% endif %}
+
+<section class="data-overview-grid">
+    <article class="panel lead-trend-panel">
+        <div class="panel-heading"><div><p class="eyebrow">Volume quotidien</p><h2>Leads reçus par jour</h2></div><strong>{{ lead_count }} au total</strong></div>
+        {% if lead_count %}<div class="lead-chart-wrap"><canvas id="lead-trend-chart" aria-label="Évolution quotidienne des leads"></canvas></div>{% else %}<div class="empty-compact"><p>Aucun lead dans cette période.</p></div>{% endif %}
+    </article>
+    <article class="panel lead-status-panel">
+        <div class="panel-heading"><div><p class="eyebrow">Suivi</p><h2>Statuts principaux</h2></div></div>
+        <div class="lead-status-list">
+            {% for item in top_statuses %}
+            <div><span><strong>{{ item.label }}</strong><small>{{ item.share }} % de la sélection</small></span><b>{{ item.count }}</b></div>
+            {% empty %}<div class="table-empty">Aucun statut à afficher.</div>{% endfor %}
+        </div>
+    </article>
+</section>
+
+<section class="panel data-table-panel">
+    <div class="panel-heading">
+        <div><p class="eyebrow">{{ range_start|date:"d/m/Y" }} — {{ range_end|date:"d/m/Y" }}</p><h2>{{ lead_count }} leads · {{ source_label }}</h2></div>
+        <span class="source-chip">{{ source_label }}</span>
+    </div>
+    <div class="table-scroll tall-table data-lead-table">
+        <table>
+            <thead><tr><th>Date d’entrée</th>{% if show_source_column %}<th>Feuille</th>{% endif %}<th>Code client</th>{% if show_client_column %}<th>Client</th>{% endif %}<th>Contact</th><th>{{ channel_label }}</th><th>Produit</th><th>Quantité</th><th>Statut actuel</th><th>{{ details_label }}</th></tr></thead>
+            <tbody>
+                {% for lead in page_obj %}
+                <tr>
+                    <td><strong>{{ lead.entered_on|date:"d/m/Y" }}</strong></td>
+                    {% if show_source_column %}<td><span class="lead-source-chip {{ lead.source }}">{{ lead.source_label }}</span></td>{% endif %}
+                    <td><strong>{{ lead.code|default:"—" }}</strong><small>Ligne source {{ lead.row_number }}</small></td>
+                    {% if show_client_column %}<td>{{ lead.name|default:"—" }}</td>{% endif %}
+                    <td>{{ lead.contact|default:"—" }}</td>
+                    <td>{{ lead.channel|default:"—" }}</td>
+                    <td>{{ lead.product|default:"—" }}</td>
+                    <td>{{ lead.quantity|default:"—" }}</td>
+                    <td>{% if lead.status %}<span class="lead-status-chip">{{ lead.status }}</span>{% else %}<span class="missing">Sans statut</span>{% endif %}</td>
+                    <td class="lead-details">{{ lead.details|default:"—" }}</td>
+                </tr>
+                {% empty %}<tr><td colspan="{% if is_consolidated %}10{% elif source == 'clicks' %}8{% else %}9{% endif %}" class="table-empty">Aucun lead ne correspond à ces filtres.</td></tr>{% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% if page_obj.paginator.num_pages > 1 %}
+    <nav class="pagination" aria-label="Pagination des leads">
+        <span>Page {{ page_obj.number }} sur {{ page_obj.paginator.num_pages }}</span>
+        <div>{% if page_obj.has_previous %}<a class="button ghost" href="?{{ preserved_query }}&page={{ page_obj.previous_page_number }}">Précédente</a>{% endif %}{% if page_obj.has_next %}<a class="button ghost" href="?{{ preserved_query }}&page={{ page_obj.next_page_number }}">Suivante</a>{% endif %}</div>
+    </nav>
+    {% endif %}
+</section>
+{{ trend|json_script:"lead-trend-data" }}
+{% endif %}
+{% endblock %}

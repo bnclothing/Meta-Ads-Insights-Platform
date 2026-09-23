@@ -25,6 +25,18 @@ async function postJson(url, payload = {}) {
   return data;
 }
 
+function metaFreshUrl(target = window.location.href) {
+  const url = new URL(target, window.location.origin);
+  url.searchParams.set("meta_fresh", "1");
+  return url.toString();
+}
+
+const loadedUrl = new URL(window.location.href);
+if (loadedUrl.searchParams.get("meta_fresh") === "1") {
+  loadedUrl.searchParams.delete("meta_fresh");
+  window.history.replaceState({}, "", `${loadedUrl.pathname}${loadedUrl.search}${loadedUrl.hash}`);
+}
+
 function setSyncMessage(target, message) {
   if (!target) return;
   const messageTarget = target.matches?.("[data-sync-banner]")
@@ -63,9 +75,9 @@ document.querySelectorAll("[data-sync-now]").forEach((button) => {
         throw new Error(completed.message || "La synchronisation a échoué.");
       }
       if (button.dataset.showLatest === "true") {
-        window.location.assign("/");
+        window.location.assign(metaFreshUrl("/"));
       } else {
-        window.location.reload();
+        window.location.assign(metaFreshUrl());
       }
     } catch (error) {
       button.textContent = "Échec — réessayer";
@@ -102,7 +114,7 @@ document.querySelectorAll("[data-sync-all]").forEach((button) => {
     button.textContent = "Synchronisation de tous les comptes…";
     try {
       await synchronizeTargets(pageSyncTargets(), button.dataset.api, banner);
-      window.location.reload();
+      window.location.assign(metaFreshUrl());
     } catch (error) {
       button.textContent = "Échec — réessayer";
       setSyncMessage(banner || document.querySelector("[data-auto-sync-result]"), error.message);
@@ -127,7 +139,7 @@ if (automaticSyncs.length) {
         end: item.dataset.endDate,
       }));
       await synchronizeTargets(targets, automaticSyncs[0].dataset.api, statusTarget, true);
-      window.location.reload();
+      window.location.replace(metaFreshUrl());
     } catch (error) {
       setSyncMessage(statusTarget, error.message);
       document.querySelector("[data-sync-loading]")?.classList.add("is-failed");
@@ -188,4 +200,43 @@ function initializeTrendChart() {
   });
 }
 
-window.addEventListener("load", initializeTrendChart);
+function initializeLeadTrendChart() {
+  const canvas = document.getElementById("lead-trend-chart");
+  const source = document.getElementById("lead-trend-data");
+  if (!canvas || !source || typeof Chart === "undefined") return;
+  const existing = Chart.getChart?.(canvas);
+  if (existing) existing.destroy();
+  const data = JSON.parse(source.textContent || "[]");
+  new Chart(canvas, {
+    type: "line",
+    data: {
+      labels: data.map((row) => row.label),
+      datasets: [{
+        label: "Leads",
+        data: data.map((row) => row.leads),
+        borderColor: "#0159a3",
+        backgroundColor: "rgba(1,89,163,.12)",
+        borderWidth: 2.5,
+        pointRadius: data.length > 45 ? 0 : 2.5,
+        pointHoverRadius: 4,
+        fill: true,
+        tension: .28,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: {mode: "index", intersect: false},
+      plugins: {legend: {display: false}, tooltip: {backgroundColor: "#004472", padding: 10}},
+      scales: {
+        x: {grid: {display: false}, ticks: {color: "#7d8a86", maxRotation: 0, maxTicksLimit: 12}},
+        y: {beginAtZero: true, grid: {color: "#edf1ef"}, ticks: {color: "#7d8a86", precision: 0}},
+      },
+    },
+  });
+}
+
+window.addEventListener("load", () => {
+  initializeTrendChart();
+  initializeLeadTrendChart();
+});

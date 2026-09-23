@@ -99,6 +99,15 @@ META_GRAPH_API_VERSION = os.environ.get("META_GRAPH_API_VERSION", "v25.0")
 META_GRAPH_API_BASE = os.environ.get("META_GRAPH_API_BASE", "https://graph.facebook.com")
 DATA_ENCRYPTION_KEY = os.environ.get("DATA_ENCRYPTION_KEY", "")
 
+# Read-only lead tracking from the company DATA workbook.
+GOOGLE_SHEET_ID = os.environ.get("GOOGLE_SHEET_ID", "1mjjAgCvllHzTvraF5Oye6wlQCON6kMXqQwKoMzpiAHU")
+GOOGLE_SERVICE_ACCOUNT_FILE = os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE", "")
+GOOGLE_SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "")
+GOOGLE_SERVICE_ACCOUNT_JSON_BASE64 = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON_BASE64", "")
+GOOGLE_SHEETS_CACHE_SECONDS = int(os.environ.get("GOOGLE_SHEETS_CACHE_SECONDS", "60"))
+GOOGLE_SHEETS_TIMEOUT_SECONDS = int(os.environ.get("GOOGLE_SHEETS_TIMEOUT_SECONDS", "15"))
+DATA_SHEET_LOCAL_XLSX = os.environ.get("DATA_SHEET_LOCAL_XLSX", "")
+
 CELERY_BROKER_URL = os.environ.get("CELERY_BROKER_URL", "redis://redis:6379/0")
 CELERY_RESULT_BACKEND = os.environ.get("CELERY_RESULT_BACKEND", "redis://redis:6379/1")
 CELERY_TASK_TRACK_STARTED = True
@@ -106,6 +115,10 @@ CELERY_TASK_TIME_LIMIT = 60 * 30
 CELERY_TASK_ALWAYS_EAGER = os.environ.get("CELERY_TASK_ALWAYS_EAGER", "1" if DEBUG else "0") == "1"
 CELERY_TASK_EAGER_PROPAGATES = True
 CELERY_BEAT_SCHEDULE = {
+    "ultex-hourly-meta-sync": {
+        "task": "reporting.tasks.hourly_meta_cycle",
+        "schedule": crontab(minute=0),
+    },
     "ultex-schedule-tick": {
         "task": "reporting.tasks.scheduled_dispatch_tick",
         "schedule": 60.0,

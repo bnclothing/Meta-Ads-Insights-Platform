@@ -8,11 +8,37 @@ from django.core.management import call_command
 from django.utils import timezone
 
 from reporting.connectors import MetaApiError
-from reporting.models import Anomaly, AnomalyStatus, AppSettings, InsightLevel, MetaConnection, Severity, SyncRun, SyncStatus
+from reporting.models import (
+    Anomaly,
+    AnomalyStatus,
+    AppSettings,
+    ConnectionStatus,
+    InsightLevel,
+    MetaConnection,
+    Severity,
+    SyncRun,
+    SyncStatus,
+)
 from reporting.services.sync import perform_sync
 
 
 RETRY_DELAYS = [60, 5 * 60, 30 * 60]
+SYNC_LEVELS = list(InsightLevel.values)
+
+
+def _covering_sync(connection, start, end, statuses, *, created_after=None):
+    queryset = SyncRun.objects.filter(
+        connection=connection,
+        status__in=statuses,
+        requested_start__lte=start,
+        requested_end__gte=end,
+    ).order_by("-created_at")
+    if created_after is not None:
+        queryset = queryset.filter(created_at__gte=created_after)
+    return next(
+        (run for run in queryset if set(SYNC_LEVELS).issubset(set(run.levels or []))),
+        None,
+    )
 
 
 def _record_sync_failure(sync_run, exc):
@@ -103,6 +129,46 @@ def daily_meta_cycle():
         result = synchronize_meta.delay(sync_run.pk, generate_report=True)
         task_ids.append(result.id)
     return task_ids
+
+
+@shared_task
+def hourly_meta_cycle():
+    """Refresh the rolling Meta window while avoiding duplicate or needlessly fresh jobs."""
+    app_settings = AppSettings.load()
+    end = timezone.localdate()
+    start = end - timedelta(days=max(app_settings.rolling_resync_days, 1) - 1)
+    fresh_after = timezone.now() - timedelta(hours=1)
+    result = {"created": [], "active": [], "fresh": [], "start": start.isoformat(), "end": end.isoformat()}
+
+    connections = MetaConnection.objects.filter(is_active=True, status=ConnectionStatus.CONNECTED).order_by("id")
+    for connection in connections:
+        active = _covering_sync(connection, start, end, (SyncStatus.PENDING, SyncStatus.RUNNING))
+        if active:
+            result["active"].append(active.pk)
+            continue
+        recent = _covering_sync(
+            connection,
+            start,
+            end,
+            (SyncStatus.SUCCESS, SyncStatus.PARTIAL),
+            created_after=fresh_after,
+        )
+        if recent:
+            result["fresh"].append(recent.pk)
+            continue
+
+        sync_run = SyncRun.objects.create(
+            connection=connection,
+            requested_start=start,
+            requested_end=end,
+            trigger="hourly",
+            levels=SYNC_LEVELS,
+        )
+        task = synchronize_meta.delay(sync_run.pk, generate_report=False)
+        sync_run.task_id = task.id or ""
+        sync_run.save(update_fields=["task_id", "updated_at"])
+        result["created"].append(sync_run.pk)
+    return result
 
 
 @shared_task

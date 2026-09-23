@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from datetime import date, time, timedelta
 from decimal import Decimal
+from urllib.parse import urlencode
 
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
+from django.core.paginator import Paginator
 from django.db import connection
 from django.db.models import Q
 from django.http import FileResponse, Http404, JsonResponse
@@ -14,7 +17,7 @@ from django.urls import reverse
 from django.utils import timezone
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
-from reporting.connectors import MetaMarketingConnector
+from reporting.connectors import DataSheetError, MetaMarketingConnector, load_lead_dataset, source_choices
 from reporting.forms import AppSettingsForm, MetaConnectionForm, MetricMappingForm
 from reporting.models import (
     ActionMetricDaily,
@@ -489,32 +492,31 @@ def dashboard(request):
     app_settings = AppSettings.load()
     range_start, range_end = _selected_range_for_accounts(accounts, request)
     context = _dashboard_payload(accounts if all_selected else (accounts[0] if accounts else None), range_start, range_end, combined=all_selected)
+    automatic_connections = list(
+        MetaConnection.objects.filter(is_active=True, status=ConnectionStatus.CONNECTED).order_by("name", "id")
+    )
+    explicit_range = any(request.GET.get(key) for key in ("start", "end", "date"))
+    if explicit_range:
+        refresh_start, refresh_end = range_start, range_end
+    else:
+        refresh_end = timezone.localdate()
+        refresh_start = refresh_end - timedelta(days=max(app_settings.rolling_resync_days, 1) - 1)
+    automatic_reload_completed = request.GET.get("meta_fresh") == "1"
     automatic_sync_jobs = []
-    sync_targets = []
-    for item in connections:
+    sync_targets = [
+        {"connection_id": item.pk, "start": range_start.isoformat(), "end": range_end.isoformat()}
+        for item in automatic_connections
+    ]
+    for item in automatic_connections:
         account = _active_account(item)
-        sync_targets.append({"connection_id": item.pk, "start": range_start.isoformat(), "end": range_end.isoformat()})
         active_backfill = None if account else _backfill_sync(item, app_settings.history_backfill_days, ACTIVE_SYNC_STATUSES)
         automatic_start = (
-            range_start
+            refresh_start
             if account
-            else (active_backfill.requested_start if active_backfill else range_end - timedelta(days=app_settings.history_backfill_days - 1))
+            else (active_backfill.requested_start if active_backfill else refresh_end - timedelta(days=app_settings.history_backfill_days - 1))
         )
-        automatic_end = active_backfill.requested_end if active_backfill else range_end
-        range_already_checked = (
-            _covering_sync(item, automatic_start, automatic_end, FINISHED_SYNC_STATUSES)
-            if account
-            else _backfill_sync(item, app_settings.history_backfill_days, FINISHED_SYNC_STATUSES)
-        )
-        account_has_data = bool(
-            account
-            and InsightDaily.objects.filter(
-                account=account,
-                level=InsightLevel.ACCOUNT,
-                date__range=(range_start, range_end),
-            ).exists()
-        )
-        if item.is_active and item.status == ConnectionStatus.CONNECTED and not account_has_data and not range_already_checked:
+        automatic_end = active_backfill.requested_end if active_backfill else refresh_end
+        if not automatic_reload_completed:
             automatic_sync_jobs.append(
                 {
                     "connection_id": item.pk,
@@ -543,6 +545,133 @@ def dashboard(request):
         }
     )
     return render(request, "reporting/dashboard.html", context)
+
+
+@login_required
+def data_sheet(request):
+    choices = source_choices()
+    choice_labels = dict(choices)
+    source = request.GET.get("source", "all")
+    if source not in choice_labels:
+        source = "all"
+
+    dataset = None
+    connection_error = ""
+    try:
+        dataset = load_lead_dataset(source, refresh=request.GET.get("refresh") == "1")
+        all_leads = list(dataset.leads)
+    except DataSheetError as exc:
+        all_leads = []
+        connection_error = str(exc)
+
+    latest_available = max((lead.entered_on for lead in all_leads), default=None)
+    fallback_end = latest_available or timezone.localdate()
+    range_end = _parse_date(request.GET.get("end"), fallback_end)
+    range_start = _parse_date(request.GET.get("start"), range_end - timedelta(days=29))
+    if range_start > range_end:
+        range_start, range_end = range_end, range_start
+    if (range_end - range_start).days > 1095:
+        range_start = range_end - timedelta(days=1095)
+
+    query = request.GET.get("q", "").strip()
+    query_key = query.casefold()
+    selected_leads = [
+        lead
+        for lead in all_leads
+        if range_start <= lead.entered_on <= range_end and (not query_key or query_key in lead.search_text)
+    ]
+    selected_leads.sort(key=lambda lead: (lead.entered_on, lead.row_number), reverse=True)
+
+    daily_counts = Counter(lead.entered_on for lead in selected_leads)
+    trend = [
+        {"date": day.isoformat(), "label": day.strftime("%d/%m"), "leads": daily_counts.get(day, 0)}
+        for day in (range_start + timedelta(days=offset) for offset in range((range_end - range_start).days + 1))
+    ]
+    status_counts = Counter(lead.status or "Sans statut" for lead in selected_leads)
+    top_statuses = [
+        {
+            "label": label,
+            "count": count,
+            "share": round((count / len(selected_leads)) * 100) if selected_leads else 0,
+        }
+        for label, count in status_counts.most_common(5)
+    ]
+    source_counts = Counter(lead.source for lead in selected_leads)
+    source_breakdown = [
+        {
+            "key": source_key,
+            "label": label,
+            "count": source_counts.get(source_key, 0),
+            "share": round((source_counts.get(source_key, 0) / len(selected_leads)) * 100) if selected_leads else 0,
+        }
+        for source_key, label in choices
+        if source_key != "all"
+    ]
+    unique_contacts = {
+        "".join(character for character in lead.contact.casefold() if character.isalnum())
+        for lead in selected_leads
+        if lead.contact
+    }
+    active_days = len(daily_counts)
+    latest_selected = max(daily_counts, default=None)
+    kpis = [
+        {"label": "Leads", "value": f"{len(selected_leads):,}".replace(",", " "), "note": "dans la sélection"},
+        {"label": "Contacts uniques", "value": f"{len(unique_contacts):,}".replace(",", " "), "note": "numéros renseignés"},
+        {"label": "Jours actifs", "value": str(active_days), "note": "avec au moins un lead"},
+        {
+            "label": "Dernier lead",
+            "value": latest_selected.strftime("%d/%m/%Y") if latest_selected else "—",
+            "note": choice_labels[source],
+        },
+    ]
+
+    paginator = Paginator(selected_leads, 75)
+    page_obj = paginator.get_page(request.GET.get("page"))
+    preserved_query = urlencode(
+        {
+            "source": source,
+            "start": range_start.isoformat(),
+            "end": range_end.isoformat(),
+            "q": query,
+        }
+    )
+    return render(
+        request,
+        "reporting/data_sheet.html",
+        {
+            "active_page": "data_sheet",
+            "source": source,
+            "source_label": choice_labels[source],
+            "source_choices": choices,
+            "range_start": range_start,
+            "range_end": range_end,
+            "query": query,
+            "dataset": dataset,
+            "connection_error": connection_error,
+            "page_obj": page_obj,
+            "lead_count": len(selected_leads),
+            "kpis": kpis,
+            "trend": trend,
+            "top_statuses": top_statuses,
+            "source_breakdown": source_breakdown,
+            "preserved_query": preserved_query,
+            "is_consolidated": source == "all",
+            "show_client_column": source != "clicks",
+            "show_source_column": source == "all",
+            "channel_label": {
+                "all": "Service / source",
+                "landing": "Service",
+                "clicks": "Source",
+                "dossiers": "Type client",
+            }[source],
+            "details_label": {
+                "all": "Information utile",
+                "landing": "Société / observation",
+                "clicks": "Formulaire / observation",
+                "dossiers": "Pays / origine",
+            }[source],
+        },
+    )
 
 
 @login_required

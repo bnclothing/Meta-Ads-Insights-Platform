@@ -212,7 +212,41 @@ class AuthenticationAndApiTests(TestCase):
         self.assertContains(response, 'data-start-date="2026-04-01"')
         self.assertContains(response, 'data-end-date="2026-04-30"')
 
-    def test_completed_empty_range_is_remembered_without_auto_sync_loop(self):
+    def test_every_dashboard_load_refreshes_all_connected_accounts_once(self):
+        first = MetaConnection.objects.create(
+            name="Premier",
+            ad_account_external_id="111",
+            status=ConnectionStatus.CONNECTED,
+            is_active=True,
+        )
+        second = MetaConnection.objects.create(
+            name="Deuxième",
+            ad_account_external_id="222",
+            status=ConnectionStatus.CONNECTED,
+            is_active=True,
+        )
+        AdAccount.objects.create(connection=first, external_id="111", name="Compte A")
+        AdAccount.objects.create(connection=second, external_id="222", name="Compte B")
+        self.client.force_login(self.user)
+
+        response = self.client.get(reverse("dashboard"), {"start": "2026-08-01", "end": "2026-08-28"})
+
+        self.assertTrue(response.context["automatic_sync_enabled"])
+        self.assertEqual(
+            {job["connection_id"] for job in response.context["automatic_sync_jobs"]},
+            {first.pk, second.pk},
+        )
+        self.assertContains(response, "Actualisation automatique")
+        self.assertEqual(response.content.decode().count("data-auto-sync data-api"), 2)
+
+        refreshed = self.client.get(
+            reverse("dashboard"),
+            {"start": "2026-08-01", "end": "2026-08-28", "meta_fresh": "1"},
+        )
+        self.assertFalse(refreshed.context["automatic_sync_enabled"])
+        self.assertNotContains(refreshed, "<div hidden data-auto-sync")
+
+    def test_completed_empty_range_is_rendered_after_automatic_reload_without_a_loop(self):
         connection = MetaConnection.objects.create(
             name="Meta",
             ad_account_external_id="456",
@@ -230,7 +264,10 @@ class AuthenticationAndApiTests(TestCase):
         )
         self.client.force_login(self.user)
 
-        response = self.client.get(reverse("dashboard"), {"start": "2026-04-01", "end": "2026-04-30"})
+        response = self.client.get(
+            reverse("dashboard"),
+            {"start": "2026-04-01", "end": "2026-04-30", "meta_fresh": "1"},
+        )
 
         self.assertFalse(response.context["automatic_sync_enabled"])
         self.assertNotContains(response, "<div hidden data-auto-sync")

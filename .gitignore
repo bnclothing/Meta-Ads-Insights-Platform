@@ -12,3 +12,14 @@ media/raw/
 backups/
 playwright-report/
 
+.env.*
+!.env.example
+
+tmp/
+output/
+outputs/
+node_modules/
+
+*.log
+*.pem
+*.key

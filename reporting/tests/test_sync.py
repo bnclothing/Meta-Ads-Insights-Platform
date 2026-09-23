@@ -8,9 +8,9 @@ from unittest.mock import patch
 from django.test import TestCase, override_settings
 
 from reporting.connectors import FetchedPage, HealthStatus, MetaApiError
-from reporting.models import ActionMetricDaily, InsightDaily, MetaConnection, RawApiPayload, SyncRun, SyncStatus
+from reporting.models import ActionMetricDaily, ConnectionStatus, InsightDaily, MetaConnection, RawApiPayload, SyncRun, SyncStatus
 from reporting.services.sync import perform_sync
-from reporting.tasks import daily_meta_cycle
+from reporting.tasks import daily_meta_cycle, hourly_meta_cycle
 from reporting.views import _dashboard_payload
 
 
@@ -180,3 +180,70 @@ class SynchronizationTests(TestCase):
 
         self.assertEqual(task_ids, ["task-1", "task-2"])
         self.assertEqual(set(SyncRun.objects.values_list("connection_id", flat=True)), {self.connection.pk, second.pk})
+
+    def test_hourly_cycle_dispatches_every_connected_account_for_the_rolling_window(self):
+        self.connection.status = ConnectionStatus.CONNECTED
+        self.connection.save(update_fields=["status", "updated_at"])
+        second = MetaConnection.objects.create(
+            name="Second",
+            ad_account_external_id="789",
+            is_active=True,
+            status=ConnectionStatus.CONNECTED,
+        )
+        MetaConnection.objects.create(
+            name="Inactive",
+            ad_account_external_id="999",
+            is_active=False,
+            status=ConnectionStatus.CONNECTED,
+        )
+        MetaConnection.objects.create(name="Not configured", ad_account_external_id="000", is_active=True)
+
+        with (
+            patch("reporting.tasks.timezone.localdate", return_value=date(2026, 8, 28)),
+            patch("reporting.tasks.synchronize_meta.delay") as dispatch,
+        ):
+            dispatch.side_effect = [SimpleNamespace(id="hourly-1"), SimpleNamespace(id="hourly-2")]
+            result = hourly_meta_cycle.run()
+
+        runs = SyncRun.objects.order_by("connection_id")
+        self.assertEqual(set(runs.values_list("connection_id", flat=True)), {self.connection.pk, second.pk})
+        self.assertTrue(all(run.requested_start == date(2026, 8, 1) for run in runs))
+        self.assertTrue(all(run.requested_end == date(2026, 8, 28) for run in runs))
+        self.assertTrue(all(run.trigger == "hourly" for run in runs))
+        self.assertEqual(len(result["created"]), 2)
+        self.assertEqual(list(runs.values_list("task_id", flat=True)), ["hourly-1", "hourly-2"])
+
+    def test_hourly_cycle_reuses_active_and_recent_covering_syncs(self):
+        self.connection.status = ConnectionStatus.CONNECTED
+        self.connection.save(update_fields=["status", "updated_at"])
+        second = MetaConnection.objects.create(
+            name="Second",
+            ad_account_external_id="789",
+            is_active=True,
+            status=ConnectionStatus.CONNECTED,
+        )
+        active = SyncRun.objects.create(
+            connection=self.connection,
+            requested_start=date(2026, 8, 1),
+            requested_end=date(2026, 8, 28),
+            levels=["account", "campaign", "adset", "ad"],
+            status=SyncStatus.RUNNING,
+        )
+        recent = SyncRun.objects.create(
+            connection=second,
+            requested_start=date(2026, 8, 1),
+            requested_end=date(2026, 8, 28),
+            levels=["account", "campaign", "adset", "ad"],
+            status=SyncStatus.SUCCESS,
+        )
+
+        with (
+            patch("reporting.tasks.timezone.localdate", return_value=date(2026, 8, 28)),
+            patch("reporting.tasks.synchronize_meta.delay") as dispatch,
+        ):
+            result = hourly_meta_cycle.run()
+
+        dispatch.assert_not_called()
+        self.assertEqual(result["active"], [active.pk])
+        self.assertEqual(result["fresh"], [recent.pk])
+        self.assertEqual(SyncRun.objects.count(), 2)
